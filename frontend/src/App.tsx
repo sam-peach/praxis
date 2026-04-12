@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import type { BOMRow, Document, DocumentStatus, Mapping } from './types/api'
-import { analyzeDocument, checkAuth, exportCSVUrl, exportTSVUrl, login, logout, saveBOM, saveMapping, uploadDocument } from './api/client'
+import {
+  analyzeDocument, checkAuth, exportCSVUrl, exportTSVUrl,
+  login, logout, saveBOM, saveMapping, uploadDocument,
+} from './api/client'
 import BomTable from './components/BomTable'
 import { LogoWordmark } from './components/Logo'
 import LoginPage from './components/LoginPage'
@@ -10,19 +13,61 @@ import UploadArea from './components/UploadArea'
 import WarningsPanel from './components/WarningsPanel'
 import { colors, font, radius, shadow } from './theme'
 
+// ── Per-document state ───────────────────────────────────────────────────────
+
+interface DocEntry {
+  doc:       Document
+  rows:      BOMRow[]
+  uploading: boolean   // file being transferred to server
+  saved:     boolean
+  error:     string | null
+}
+
+// ── Concurrency semaphore ────────────────────────────────────────────────────
+
+function createSemaphore(limit: number) {
+  let active = 0
+  const queue: Array<() => void> = []
+  return {
+    async acquire() {
+      if (active < limit) { active++; return }
+      await new Promise<void>(resolve => queue.push(resolve))
+      active++
+    },
+    release() {
+      active--
+      const next = queue.shift()
+      if (next) next()
+    },
+  }
+}
+
+const ANALYSIS_CONCURRENCY = 3
+
+// ── App ──────────────────────────────────────────────────────────────────────
+
 export default function App() {
   const navigate = useNavigate()
-  const [authed,    setAuthed]    = useState<boolean | null>(null)
-  const [doc,       setDoc]       = useState<Document | null>(null)
-  const [rows,      setRows]      = useState<BOMRow[]>([])
-  const [uploading, setUploading] = useState(false)
-  const [analyzing, setAnalyzing] = useState(false)
-  const [saved,     setSaved]     = useState(false)
-  const [error,     setError]     = useState<string | null>(null)
+  const [authed,   setAuthed]   = useState<boolean | null>(null)
+  const [entries,  setEntries]  = useState<Map<string, DocEntry>>(new Map())
+  const [activeId, setActiveId] = useState<string | null>(null)
+  const [copied,   setCopied]   = useState(false)
+  const sem = useRef(createSemaphore(ANALYSIS_CONCURRENCY))
 
-  useEffect(() => {
-    checkAuth().then(ok => setAuthed(ok))
-  }, [])
+  useEffect(() => { checkAuth().then(ok => setAuthed(ok)) }, [])
+
+  // Functional update helper — safe to call from any async context.
+  function patchEntry(id: string, patch: Partial<DocEntry>) {
+    setEntries(prev => {
+      const e = prev.get(id)
+      if (!e) return prev
+      const next = new Map(prev)
+      next.set(id, { ...e, ...patch })
+      return next
+    })
+  }
+
+  // ── Auth ──────────────────────────────────────────────────────────────────
 
   async function handleLogin(username: string, password: string) {
     await login(username, password)
@@ -34,45 +79,95 @@ export default function App() {
     setAuthed(false)
   }
 
-  async function handleUpload(file: File) {
-    setError(null)
-    setUploading(true)
+  // ── Upload + auto-analyze ─────────────────────────────────────────────────
+
+  async function handleUpload(files: File[]) {
+    // 1. Add placeholder entries immediately so the queue renders right away.
+    const placeholders = files.map(file => {
+      const tempId = `uploading-${Date.now()}-${Math.random()}`
+      const placeholder: DocEntry = {
+        doc: {
+          id:         tempId,
+          filename:   file.name,
+          status:     'uploaded',
+          uploadedAt: new Date().toISOString(),
+          bomRows:    [],
+          warnings:   [],
+        },
+        rows:      [],
+        uploading: true,
+        saved:     false,
+        error:     null,
+      }
+      return { tempId, file, placeholder }
+    })
+
+    setEntries(prev => {
+      const next = new Map(prev)
+      for (const { tempId, placeholder } of placeholders) {
+        next.set(tempId, placeholder)
+      }
+      return next
+    })
+    // Select first new doc so user sees something immediately.
+    setActiveId(placeholders[0].tempId)
+
+    // 2. Upload each file; swap placeholder for real doc on success.
+    const uploadedDocs: Document[] = []
+    await Promise.all(placeholders.map(async ({ tempId, file }) => {
+      try {
+        const doc = await uploadDocument(file)
+        setEntries(prev => {
+          const next = new Map(prev)
+          next.delete(tempId)
+          next.set(doc.id, { doc, rows: [], uploading: false, saved: false, error: null })
+          return next
+        })
+        // Keep the active selection pointing at the real doc.
+        setActiveId(prev => prev === tempId ? doc.id : prev)
+        uploadedDocs.push(doc)
+      } catch (e) {
+        patchEntry(tempId, { uploading: false, error: (e as Error).message })
+      }
+    }))
+
+    // 3. Auto-analyze all successful uploads, bounded by semaphore.
+    await Promise.all(uploadedDocs.map(doc => runAnalysis(doc.id)))
+  }
+
+  async function runAnalysis(id: string) {
+    patchEntry(id, { error: null })
+    // Signal "analyzing" via doc.status — update the doc object.
+    setEntries(prev => {
+      const e = prev.get(id)
+      if (!e) return prev
+      const next = new Map(prev)
+      next.set(id, { ...e, doc: { ...e.doc, status: 'analyzing' } })
+      return next
+    })
+
+    await sem.current.acquire()
     try {
-      const uploaded = await uploadDocument(file)
-      setDoc(uploaded)
-      setRows([])
-      setSaved(false)
+      const result = await analyzeDocument(id)
+      patchEntry(id, { doc: result, rows: result.bomRows, saved: false })
     } catch (e) {
-      setError((e as Error).message)
+      patchEntry(id, {
+        doc: { ...(entries.get(id)?.doc ?? {} as Document), status: 'error' },
+        error: (e as Error).message,
+      })
     } finally {
-      setUploading(false)
+      sem.current.release()
     }
   }
 
-  async function handleAnalyze() {
-    if (!doc) return
-    setError(null)
-    setAnalyzing(true)
-    try {
-      const result = await analyzeDocument(doc.id)
-      setDoc(result)
-      setRows(result.bomRows)
-      setSaved(false)
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setAnalyzing(false)
-    }
-  }
+  // ── Per-doc actions ───────────────────────────────────────────────────────
 
-  async function handleSave() {
-    if (!doc) return
-    setError(null)
+  async function handleSave(id: string, rows: BOMRow[]) {
     try {
-      await saveBOM(doc.id, rows)
-      setSaved(true)
+      await saveBOM(id, rows)
+      patchEntry(id, { saved: true })
     } catch (e) {
-      setError((e as Error).message)
+      patchEntry(id, { error: (e as Error).message })
     }
   }
 
@@ -82,23 +177,27 @@ export default function App() {
     await saveMapping(mapping)
   }
 
-  function handleRowsChange(next: BOMRow[]) {
-    setRows(next)
-    setSaved(false)
+  function handleRowsChange(id: string, rows: BOMRow[]) {
+    patchEntry(id, { rows, saved: false })
   }
 
-  function handleReset() {
-    setDoc(null)
-    setRows([])
-    setError(null)
-    setSaved(false)
+  function handleRemove(id: string) {
+    setEntries(prev => {
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
+    setActiveId(prev => {
+      if (prev !== id) return prev
+      // Pick the first remaining entry as the new active, or null.
+      const remaining = [...entries.keys()].filter(k => k !== id)
+      return remaining[0] ?? null
+    })
   }
 
-  const [copied, setCopied] = useState(false)
-
-  function handleCopyForSAP() {
+  function handleCopyForSAP(rows: BOMRow[]) {
     const header = ['Line', 'Description', 'Quantity', 'Unit', 'Customer Part Number', 'Internal Part Number', 'Manufacturer Part Number', 'Notes']
-    const dataRows = rows.map(r => [
+    const data = rows.map(r => [
       String(r.lineNumber),
       r.description,
       r.quantity.value != null ? String(r.quantity.value) : r.quantity.raw,
@@ -108,17 +207,21 @@ export default function App() {
       r.manufacturerPartNumber,
       r.notes,
     ])
-    const tsv = [header, ...dataRows].map(row => row.join('\t')).join('\n')
+    const tsv = [header, ...data].map(row => row.join('\t')).join('\n')
     navigator.clipboard.writeText(tsv).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
   }
 
-  const hasResults = doc?.status === 'done' && rows.length > 0
+  // ── Render ────────────────────────────────────────────────────────────────
 
   if (authed === null) return null
   if (!authed) return <LoginPage onLogin={handleLogin} />
+
+  const activeEntry = activeId ? (entries.get(activeId) ?? null) : null
+  const hasEntries  = entries.size > 0
+  const hasResults  = activeEntry?.doc.status === 'done' && (activeEntry.rows.length > 0)
 
   return (
     <div style={{ fontFamily: font.body, minHeight: '100vh', background: colors.bg, color: colors.text }}>
@@ -128,12 +231,7 @@ export default function App() {
         <div style={navInner}>
           <LogoWordmark size={28} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <button
-              style={iconBtn}
-              onClick={() => navigate('/settings')}
-              title="Settings"
-              aria-label="Settings"
-            >
+            <button style={iconBtn} onClick={() => navigate('/settings')} title="Settings" aria-label="Settings">
               <SlidersIcon />
             </button>
             <button style={ghostBtn} onClick={handleLogout}>Sign out</button>
@@ -147,71 +245,98 @@ export default function App() {
         <Route path="/" element={
           <main style={mainStyle}>
 
-            <div style={{ marginBottom: 28 }}>
+            <div style={{ marginBottom: 24 }}>
               <h1 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>
                 Drawing to BOM
               </h1>
               <p style={{ margin: 0, color: colors.textMuted, fontSize: 14 }}>
-                Upload a customer drawing PDF to generate a draft Bill of Materials for review.
+                Upload customer drawing PDFs to generate draft Bills of Materials for review.
               </p>
             </div>
 
-            {error && (
-              <div style={errorBanner}>
-                <strong style={{ fontWeight: 600 }}>Error:</strong> {error}
+            {/* Upload area — full when empty, compact strip when docs are present */}
+            {hasEntries ? (
+              <UploadArea onUpload={handleUpload} loading={false} compact />
+            ) : (
+              <UploadArea onUpload={handleUpload} loading={false} />
+            )}
+
+            {/* Document queue */}
+            {hasEntries && (
+              <div style={queueGrid}>
+                {[...entries.entries()].map(([id, entry]) => (
+                  <DocCard
+                    key={id}
+                    entry={entry}
+                    active={id === activeId}
+                    onClick={() => setActiveId(id)}
+                    onRemove={() => handleRemove(id)}
+                    onRetry={() => runAnalysis(id)}
+                  />
+                ))}
               </div>
             )}
 
-            {!doc ? (
-              <UploadArea onUpload={handleUpload} loading={uploading} />
-            ) : (
+            {/* Active document detail */}
+            {activeEntry && (
               <>
-                <div style={docBar}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ fontWeight: 600, fontSize: 15 }}>{doc.filename}</span>
-                    <StatusBadge status={doc.status} />
+                {activeEntry.error && (
+                  <div style={errorBanner}>
+                    <strong style={{ fontWeight: 600 }}>Error:</strong> {activeEntry.error}
                   </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                    {(doc.status === 'uploaded' || doc.status === 'error') && (
-                      <button style={primaryBtn} onClick={handleAnalyze} disabled={analyzing}>
-                        {analyzing
-                          ? <><span className="spinner" />Analyzing...</>
-                          : 'Analyze Drawing'}
+                )}
+
+                <div style={docBar}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <span style={{ fontWeight: 600, fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {activeEntry.doc.filename}
+                    </span>
+                    <StatusBadge status={activeEntry.doc.status} uploading={activeEntry.uploading} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', flexShrink: 0 }}>
+                    {activeEntry.doc.status === 'error' && (
+                      <button style={primaryBtn} onClick={() => runAnalysis(activeEntry.doc.id)}>
+                        Retry Analysis
                       </button>
                     )}
                     {hasResults && (
                       <>
-                        <button style={saved ? savedBtn : secondaryBtn} onClick={handleSave}>
-                          {saved ? 'Saved ✓' : 'Save Changes'}
+                        <button
+                          style={activeEntry.saved ? savedBtn : secondaryBtn}
+                          onClick={() => handleSave(activeEntry.doc.id, activeEntry.rows)}
+                        >
+                          {activeEntry.saved ? 'Saved ✓' : 'Save Changes'}
                         </button>
-                        <button style={copied ? savedBtn : secondaryBtn} onClick={handleCopyForSAP}>
+                        <button style={copied ? savedBtn : secondaryBtn} onClick={() => handleCopyForSAP(activeEntry.rows)}>
                           {copied ? 'Copied ✓' : 'Copy for SAP'}
                         </button>
-                        <a href={exportTSVUrl(doc.id)} style={secondaryBtn} download>
-                          Export TSV
-                        </a>
-                        <a href={exportCSVUrl(doc.id)} style={secondaryBtn} download>
-                          Export CSV
-                        </a>
+                        <a href={exportTSVUrl(activeEntry.doc.id)} style={secondaryBtn} download>Export TSV</a>
+                        <a href={exportCSVUrl(activeEntry.doc.id)} style={secondaryBtn} download>Export CSV</a>
                       </>
                     )}
-                    <button style={ghostBtn} onClick={handleReset}>Upload New</button>
                   </div>
                 </div>
 
-                <WarningsPanel warnings={doc.warnings} />
+                <WarningsPanel warnings={activeEntry.doc.warnings ?? []} />
 
                 {hasResults ? (
-                  <BomTable rows={rows} onChange={handleRowsChange} onSaveMapping={handleSaveMapping} />
-                ) : doc.status === 'uploaded' ? (
-                  <EmptyState>Drawing uploaded. Click <strong>Analyze Drawing</strong> to extract the BOM.</EmptyState>
-                ) : doc.status === 'analyzing' ? (
+                  <BomTable
+                    rows={activeEntry.rows}
+                    onChange={rows => handleRowsChange(activeEntry.doc.id, rows)}
+                    onSaveMapping={handleSaveMapping}
+                  />
+                ) : activeEntry.uploading ? (
+                  <EmptyState><span className="spinner" style={{ borderTopColor: colors.brand, borderColor: colors.border }} />Uploading…</EmptyState>
+                ) : activeEntry.doc.status === 'uploaded' ? (
+                  <EmptyState>Ready to analyze.</EmptyState>
+                ) : activeEntry.doc.status === 'analyzing' ? (
                   <EmptyState>Analyzing drawing…</EmptyState>
-                ) : doc.status === 'error' ? (
+                ) : activeEntry.doc.status === 'error' ? (
                   <EmptyState>Analysis failed. See error above.</EmptyState>
                 ) : null}
               </>
             )}
+
           </main>
         } />
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -220,7 +345,75 @@ export default function App() {
   )
 }
 
-// ── Sub-components ──────────────────────────────────────────────────────────
+// ── DocCard ───────────────────────────────────────────────────────────────────
+
+function DocCard({
+  entry, active, onClick, onRemove, onRetry,
+}: {
+  entry:    DocEntry
+  active:   boolean
+  onClick:  () => void
+  onRemove: () => void
+  onRetry:  () => void
+}) {
+  const { doc, rows, uploading, error } = entry
+  const busy = uploading || doc.status === 'analyzing'
+
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        position:     'relative',
+        padding:      '12px 14px',
+        background:   colors.surface,
+        border:       `1.5px solid ${active ? colors.brand : colors.border}`,
+        borderRadius: radius.lg,
+        cursor:       'pointer',
+        boxShadow:    active ? `0 0 0 3px ${colors.brandLight}` : shadow.sm,
+        transition:   'border-color 0.15s, box-shadow 0.15s',
+        minWidth:     0,
+      }}
+    >
+      {/* Remove button — only when not busy */}
+      {!busy && (
+        <button
+          onClick={e => { e.stopPropagation(); onRemove() }}
+          style={cardRemoveBtn}
+          title="Remove"
+        >×</button>
+      )}
+
+      {/* Filename */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, paddingRight: 18,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 6 }}>
+        {doc.filename}
+      </div>
+
+      {/* Status row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <StatusBadge status={doc.status} uploading={uploading} />
+        {doc.status === 'done' && (
+          <span style={{ fontSize: 11, color: colors.textMuted }}>
+            {rows.length} {rows.length === 1 ? 'item' : 'items'}
+          </span>
+        )}
+        {busy && <span className="spinner" style={{ borderTopColor: colors.brand, borderColor: colors.borderLight, width: 10, height: 10 }} />}
+      </div>
+
+      {/* Error snippet */}
+      {error && (
+        <div style={{ marginTop: 6, fontSize: 11, color: colors.errorText,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={error}
+        >
+          {error}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Shared sub-components ─────────────────────────────────────────────────────
 
 function SlidersIcon() {
   return (
@@ -233,7 +426,15 @@ function SlidersIcon() {
   )
 }
 
-function StatusBadge({ status }: { status: DocumentStatus }) {
+function StatusBadge({ status, uploading }: { status: DocumentStatus; uploading?: boolean }) {
+  if (uploading) {
+    return (
+      <span style={{ padding: '3px 10px', borderRadius: radius.full, fontSize: 12, fontWeight: 600,
+        background: colors.brandLight, color: colors.brandDark }}>
+        uploading
+      </span>
+    )
+  }
   const map: Record<DocumentStatus, { bg: string; color: string }> = {
     uploaded:  { bg: colors.brandLight,  color: colors.brandDark   },
     analyzing: { bg: colors.warningBg,   color: colors.warningText },
@@ -242,14 +443,8 @@ function StatusBadge({ status }: { status: DocumentStatus }) {
   }
   const s = map[status]
   return (
-    <span style={{
-      padding:      '3px 10px',
-      borderRadius: radius.full,
-      fontSize:     12,
-      fontWeight:   600,
-      background:   s.bg,
-      color:        s.color,
-    }}>
+    <span style={{ padding: '3px 10px', borderRadius: radius.full, fontSize: 12, fontWeight: 600,
+      background: s.bg, color: s.color }}>
       {status}
     </span>
   )
@@ -257,127 +452,84 @@ function StatusBadge({ status }: { status: DocumentStatus }) {
 
 function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{
-      padding:      56,
-      textAlign:    'center',
-      color:        colors.textMuted,
-      border:       `1.5px dashed ${colors.border}`,
-      borderRadius: radius.lg,
-      fontSize:     14,
-      lineHeight:   1.6,
-      background:   colors.surface,
-    }}>
+    <div style={{ padding: 56, textAlign: 'center', color: colors.textMuted,
+      border: `1.5px dashed ${colors.border}`, borderRadius: radius.lg,
+      fontSize: 14, lineHeight: 1.6, background: colors.surface }}>
       {children}
     </div>
   )
 }
 
-// ── Styles ──────────────────────────────────────────────────────────────────
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const navHeader: React.CSSProperties = {
-  position:   'sticky',
-  top:        0,
-  zIndex:     100,
-  background: colors.surface,
-  boxShadow:  shadow.header,
+  position: 'sticky', top: 0, zIndex: 100,
+  background: colors.surface, boxShadow: shadow.header,
 }
 
 const navInner: React.CSSProperties = {
-  maxWidth:       1200,
-  margin:         '0 auto',
-  padding:        '0 24px',
-  height:         58,
-  display:        'flex',
-  alignItems:     'center',
-  justifyContent: 'space-between',
+  maxWidth: 1200, margin: '0 auto', padding: '0 24px', height: 58,
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
 }
 
 const mainStyle: React.CSSProperties = {
-  maxWidth: 1200,
-  margin:   '0 auto',
-  padding:  '36px 24px 72px',
+  maxWidth: 1200, margin: '0 auto', padding: '36px 24px 72px',
+}
+
+const queueGrid: React.CSSProperties = {
+  display:             'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+  gap:                 10,
+  margin:              '16px 0',
 }
 
 const errorBanner: React.CSSProperties = {
-  background:   colors.errorBg,
-  color:        colors.errorText,
-  border:       `1px solid ${colors.errorBorder}`,
-  padding:      '12px 16px',
-  borderRadius: radius.md,
-  fontSize:     14,
-  lineHeight:   1.5,
-  marginBottom: 20,
+  background: colors.errorBg, color: colors.errorText,
+  border: `1px solid ${colors.errorBorder}`, padding: '12px 16px',
+  borderRadius: radius.md, fontSize: 14, lineHeight: 1.5, marginBottom: 16,
 }
 
 const docBar: React.CSSProperties = {
-  display:        'flex',
-  alignItems:     'center',
-  justifyContent: 'space-between',
-  flexWrap:       'wrap',
-  gap:            12,
-  padding:        '12px 16px',
-  background:     colors.surface,
-  border:         `1px solid ${colors.border}`,
-  borderRadius:   radius.lg,
-  marginBottom:   16,
-  boxShadow:      shadow.sm,
+  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+  flexWrap: 'wrap', gap: 12, padding: '12px 16px',
+  background: colors.surface, border: `1px solid ${colors.border}`,
+  borderRadius: radius.lg, marginBottom: 16, boxShadow: shadow.sm,
 }
 
 const primaryBtn: React.CSSProperties = {
-  padding:      '8px 18px',
-  background:   colors.brand,
-  color:        '#fff',
-  border:       'none',
-  borderRadius: radius.md,
-  cursor:       'pointer',
-  fontSize:     14,
-  fontWeight:   600,
-  fontFamily:   font.body,
+  padding: '8px 18px', background: colors.brand, color: '#fff',
+  border: 'none', borderRadius: radius.md, cursor: 'pointer',
+  fontSize: 14, fontWeight: 600, fontFamily: font.body,
 }
 
 const secondaryBtn: React.CSSProperties = {
-  padding:        '8px 16px',
-  background:     colors.surface,
-  color:          colors.text,
-  border:         `1px solid ${colors.border}`,
-  borderRadius:   radius.md,
-  cursor:         'pointer',
-  fontSize:       14,
-  fontWeight:     500,
-  textDecoration: 'none',
-  display:        'inline-block',
-  fontFamily:     font.body,
+  padding: '8px 16px', background: colors.surface, color: colors.text,
+  border: `1px solid ${colors.border}`, borderRadius: radius.md,
+  cursor: 'pointer', fontSize: 14, fontWeight: 500,
+  textDecoration: 'none', display: 'inline-block', fontFamily: font.body,
 }
 
 const savedBtn: React.CSSProperties = {
   ...secondaryBtn,
-  background:   colors.successBg,
-  color:        colors.successText,
-  borderColor:  colors.successBorder,
+  background: colors.successBg, color: colors.successText, borderColor: colors.successBorder,
 }
 
 const ghostBtn: React.CSSProperties = {
-  padding:      '7px 14px',
-  background:   'transparent',
-  color:        colors.textMuted,
-  border:       `1px solid ${colors.border}`,
-  borderRadius: radius.md,
-  cursor:       'pointer',
-  fontSize:     14,
-  fontFamily:   font.body,
+  padding: '7px 14px', background: 'transparent', color: colors.textMuted,
+  border: `1px solid ${colors.border}`, borderRadius: radius.md,
+  cursor: 'pointer', fontSize: 14, fontFamily: font.body,
 }
 
 const iconBtn: React.CSSProperties = {
-  width:          34,
-  height:         34,
-  display:        'flex',
-  alignItems:     'center',
-  justifyContent: 'center',
-  background:     'transparent',
-  color:          colors.textMuted,
-  border:         `1px solid ${colors.border}`,
-  borderRadius:   radius.md,
-  cursor:         'pointer',
-  padding:        0,
-  flexShrink:     0,
+  width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center',
+  background: 'transparent', color: colors.textMuted, border: `1px solid ${colors.border}`,
+  borderRadius: radius.md, cursor: 'pointer', padding: 0, flexShrink: 0,
+}
+
+const cardRemoveBtn: React.CSSProperties = {
+  position: 'absolute', top: 6, right: 6,
+  width: 18, height: 18, padding: 0, lineHeight: 1,
+  background: 'none', border: 'none', cursor: 'pointer',
+  color: colors.textSubtle, fontSize: 16, display: 'flex',
+  alignItems: 'center', justifyContent: 'center',
 }

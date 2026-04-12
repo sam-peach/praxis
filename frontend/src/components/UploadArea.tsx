@@ -2,22 +2,57 @@ import { useRef, useState } from 'react'
 import { colors, radius, shadow } from '../theme'
 
 interface Props {
-  onUpload: (file: File) => void
+  onUpload: (files: File[]) => void
   loading:  boolean
+  compact?: boolean
 }
 
-export default function UploadArea({ onUpload, loading }: Props) {
+export default function UploadArea({ onUpload, loading, compact = false }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
 
   function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return
-    const file = files[0]
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Please select a PDF file.')
+    const pdfs = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.pdf'))
+    if (pdfs.length === 0) {
+      alert('Please select PDF files.')
       return
     }
-    onUpload(file)
+    onUpload(pdfs)
+  }
+
+  if (compact) {
+    return (
+      <div
+        style={{
+          display:      'flex',
+          alignItems:   'center',
+          gap:          10,
+          padding:      '10px 14px',
+          border:       `1.5px dashed ${dragging ? colors.brand : colors.border}`,
+          borderRadius: radius.lg,
+          background:   dragging ? colors.brandFaint : colors.surface,
+          cursor:       loading ? 'wait' : 'pointer',
+          transition:   'border-color 0.15s, background 0.15s',
+          opacity:      loading ? 0.65 : 1,
+        }}
+        onClick={() => !loading && inputRef.current?.click()}
+        onDragOver={e  => { e.preventDefault(); setDragging(true) }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={e => {
+          e.preventDefault()
+          setDragging(false)
+          if (!loading) handleFiles(e.dataTransfer.files)
+        }}
+      >
+        <input ref={inputRef} type="file" accept=".pdf" multiple style={{ display: 'none' }}
+          onChange={e => handleFiles(e.target.files)} />
+        <UploadIcon active={dragging} size={20} />
+        <span style={{ fontSize: 13, color: colors.textMuted }}>
+          {loading ? 'Uploading…' : 'Drop more PDFs or click to add'}
+        </span>
+      </div>
+    )
   }
 
   return (
@@ -42,16 +77,11 @@ export default function UploadArea({ onUpload, loading }: Props) {
         if (!loading) handleFiles(e.dataTransfer.files)
       }}
     >
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".pdf"
-        style={{ display: 'none' }}
-        onChange={e => handleFiles(e.target.files)}
-      />
+      <input ref={inputRef} type="file" accept=".pdf" multiple style={{ display: 'none' }}
+        onChange={e => handleFiles(e.target.files)} />
 
       <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 18 }}>
-        <UploadIcon active={dragging} />
+        <UploadIcon active={dragging} size={52} />
       </div>
 
       {loading ? (
@@ -61,10 +91,10 @@ export default function UploadArea({ onUpload, loading }: Props) {
       ) : (
         <>
           <p style={{ margin: '0 0 6px', fontWeight: 600, fontSize: 15, color: colors.text }}>
-            Drop a customer drawing here, or click to browse
+            Drop customer drawings here, or click to browse
           </p>
           <p style={{ margin: 0, color: colors.textSubtle, fontSize: 13 }}>
-            PDF files only · max 32 MB
+            PDF files only · max 32 MB · multiple files supported
           </p>
         </>
       )}
@@ -72,18 +102,15 @@ export default function UploadArea({ onUpload, loading }: Props) {
   )
 }
 
-function UploadIcon({ active = false }: { active?: boolean }) {
+function UploadIcon({ active = false, size = 52 }: { active?: boolean; size?: number }) {
   const c = active ? colors.brand : '#b8b3bf'
+  const s = size / 52
   return (
-    <svg width="52" height="52" viewBox="0 0 52 52" fill="none" aria-hidden="true">
-      {/* Outer ring */}
-      <circle cx="26" cy="26" r="22" stroke={c} strokeWidth="1.5" opacity="0.2" />
-      {/* Up arrow shaft */}
-      <path d="M26 34V20" stroke={c} strokeWidth="2" strokeLinecap="round" />
-      {/* Up arrow head */}
-      <path d="M19 27l7-8 7 8" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      {/* Base line */}
-      <path d="M18 37h16" stroke={c} strokeWidth="1.5" strokeLinecap="round" />
+    <svg width={size} height={size} viewBox="0 0 52 52" fill="none" aria-hidden="true">
+      <circle cx="26" cy="26" r="22" stroke={c} strokeWidth={1.5 / s} opacity="0.2" />
+      <path d="M26 34V20" stroke={c} strokeWidth={2 / s} strokeLinecap="round" />
+      <path d="M19 27l7-8 7 8" stroke={c} strokeWidth={2 / s} strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M18 37h16" stroke={c} strokeWidth={1.5 / s} strokeLinecap="round" />
     </svg>
   )
 }
