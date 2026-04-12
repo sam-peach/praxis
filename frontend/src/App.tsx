@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import type { BOMRow, Document, DocumentStatus, Mapping } from './types/api'
 import { analyzeDocument, checkAuth, exportCSVUrl, login, logout, saveBOM, saveMapping, uploadDocument } from './api/client'
 import BomTable from './components/BomTable'
@@ -10,8 +11,8 @@ import WarningsPanel from './components/WarningsPanel'
 import { colors, font, radius, shadow } from './theme'
 
 export default function App() {
+  const navigate = useNavigate()
   const [authed,    setAuthed]    = useState<boolean | null>(null)
-  const [view,      setView]      = useState<'main' | 'settings'>('main')
   const [doc,       setDoc]       = useState<Document | null>(null)
   const [rows,      setRows]      = useState<BOMRow[]>([])
   const [uploading, setUploading] = useState(false)
@@ -96,8 +97,7 @@ export default function App() {
   const hasResults = doc?.status === 'done' && rows.length > 0
 
   if (authed === null) return null
-  if (!authed)             return <LoginPage onLogin={handleLogin} />
-  if (view === 'settings') return <SettingsPage onBack={() => setView('main')} />
+  if (!authed) return <LoginPage onLogin={handleLogin} />
 
   return (
     <div style={{ fontFamily: font.body, minHeight: '100vh', background: colors.bg, color: colors.text }}>
@@ -109,7 +109,7 @@ export default function App() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
             <button
               style={iconBtn}
-              onClick={() => setView('settings')}
+              onClick={() => navigate('/settings')}
               title="Settings"
               aria-label="Settings"
             >
@@ -120,77 +120,75 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Page content ────────────────────────────────────────────────────── */}
-      <main style={mainStyle}>
+      {/* ── Routed content ──────────────────────────────────────────────────── */}
+      <Routes>
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/" element={
+          <main style={mainStyle}>
 
-        <div style={{ marginBottom: 28 }}>
-          <h1 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>
-            Drawing to BOM
-          </h1>
-          <p style={{ margin: 0, color: colors.textMuted, fontSize: 14 }}>
-            Upload a customer drawing PDF to generate a draft Bill of Materials for review.
-          </p>
-        </div>
-
-        {error && (
-          <div style={errorBanner}>
-            <strong style={{ fontWeight: 600 }}>Error:</strong> {error}
-          </div>
-        )}
-
-        {!doc ? (
-          <UploadArea onUpload={handleUpload} loading={uploading} />
-        ) : (
-          <>
-            {/* Document bar */}
-            <div style={docBar}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ fontWeight: 600, fontSize: 15 }}>{doc.filename}</span>
-                <StatusBadge status={doc.status} />
-              </div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                {(doc.status === 'uploaded' || doc.status === 'error') && (
-                  <button style={primaryBtn} onClick={handleAnalyze} disabled={analyzing}>
-                    {analyzing
-                      ? <><span className="spinner" />Analyzing...</>
-                      : 'Analyze Drawing'}
-                  </button>
-                )}
-                {hasResults && (
-                  <>
-                    <button
-                      style={saved ? savedBtn : secondaryBtn}
-                      onClick={handleSave}
-                    >
-                      {saved ? 'Saved ✓' : 'Save Changes'}
-                    </button>
-                    <a href={exportCSVUrl(doc.id)} style={secondaryBtn} download>
-                      Export CSV
-                    </a>
-                  </>
-                )}
-                <button style={ghostBtn} onClick={handleReset}>
-                  Upload New
-                </button>
-              </div>
+            <div style={{ marginBottom: 28 }}>
+              <h1 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>
+                Drawing to BOM
+              </h1>
+              <p style={{ margin: 0, color: colors.textMuted, fontSize: 14 }}>
+                Upload a customer drawing PDF to generate a draft Bill of Materials for review.
+              </p>
             </div>
 
-            <WarningsPanel warnings={doc.warnings} />
+            {error && (
+              <div style={errorBanner}>
+                <strong style={{ fontWeight: 600 }}>Error:</strong> {error}
+              </div>
+            )}
 
-            {hasResults ? (
-              <BomTable rows={rows} onChange={handleRowsChange} onSaveMapping={handleSaveMapping} />
-            ) : doc.status === 'uploaded' ? (
-              <EmptyState>
-                Drawing uploaded. Click <strong>Analyze Drawing</strong> to extract the BOM.
-              </EmptyState>
-            ) : doc.status === 'analyzing' ? (
-              <EmptyState>Analyzing drawing…</EmptyState>
-            ) : doc.status === 'error' ? (
-              <EmptyState>Analysis failed. See error above.</EmptyState>
-            ) : null}
-          </>
-        )}
-      </main>
+            {!doc ? (
+              <UploadArea onUpload={handleUpload} loading={uploading} />
+            ) : (
+              <>
+                <div style={docBar}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>{doc.filename}</span>
+                    <StatusBadge status={doc.status} />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {(doc.status === 'uploaded' || doc.status === 'error') && (
+                      <button style={primaryBtn} onClick={handleAnalyze} disabled={analyzing}>
+                        {analyzing
+                          ? <><span className="spinner" />Analyzing...</>
+                          : 'Analyze Drawing'}
+                      </button>
+                    )}
+                    {hasResults && (
+                      <>
+                        <button style={saved ? savedBtn : secondaryBtn} onClick={handleSave}>
+                          {saved ? 'Saved ✓' : 'Save Changes'}
+                        </button>
+                        <a href={exportCSVUrl(doc.id)} style={secondaryBtn} download>
+                          Export CSV
+                        </a>
+                      </>
+                    )}
+                    <button style={ghostBtn} onClick={handleReset}>Upload New</button>
+                  </div>
+                </div>
+
+                <WarningsPanel warnings={doc.warnings} />
+
+                {hasResults ? (
+                  <BomTable rows={rows} onChange={handleRowsChange} onSaveMapping={handleSaveMapping} />
+                ) : doc.status === 'uploaded' ? (
+                  <EmptyState>Drawing uploaded. Click <strong>Analyze Drawing</strong> to extract the BOM.</EmptyState>
+                ) : doc.status === 'analyzing' ? (
+                  <EmptyState>Analyzing drawing…</EmptyState>
+                ) : doc.status === 'error' ? (
+                  <EmptyState>Analysis failed. See error above.</EmptyState>
+                ) : null}
+              </>
+            )}
+          </main>
+        } />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
     </div>
   )
 }

@@ -119,7 +119,7 @@ func main() {
 	mux.HandleFunc("POST /api/users", srv.requireAuth(srv.createUser))
 
 	if _, err := os.Stat(staticDir); err == nil {
-		mux.Handle("/", http.FileServer(http.Dir(staticDir)))
+		mux.Handle("/", spaHandler(staticDir))
 	}
 
 	port := os.Getenv("PORT")
@@ -153,6 +153,21 @@ func loadDotEnv(path string) {
 			os.Setenv(key, val)
 		}
 	}
+}
+
+// spaHandler serves static files from dir, falling back to index.html for any
+// path that doesn't correspond to a file on disk. This lets the React Router
+// handle client-side routes (e.g. /settings) even on a hard refresh.
+func spaHandler(dir string) http.Handler {
+	fs := http.FileServer(http.Dir(dir))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := filepath.Join(dir, r.URL.Path)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			http.ServeFile(w, r, filepath.Join(dir, "index.html"))
+			return
+		}
+		fs.ServeHTTP(w, r)
+	})
 }
 
 func cors(next http.Handler) http.Handler {

@@ -1,13 +1,11 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { changePassword } from '../api/client'
 import { LogoWordmark } from './Logo'
 import { colors, font, radius, shadow } from '../theme'
 
-interface Props {
-  onBack: () => void
-}
-
-export default function SettingsPage({ onBack }: Props) {
+export default function SettingsPage() {
+  const navigate = useNavigate()
   const [currentPassword,  setCurrentPassword]  = useState('')
   const [newPassword,      setNewPassword]      = useState('')
   const [confirmPassword,  setConfirmPassword]  = useState('')
@@ -50,7 +48,7 @@ export default function SettingsPage({ onBack }: Props) {
       <header style={navHeader}>
         <div style={navInner}>
           <LogoWordmark size={28} />
-          <button style={ghostBtn} onClick={onBack}>← Back</button>
+          <button style={ghostBtn} onClick={() => navigate('/')}>← Back</button>
         </div>
       </header>
 
