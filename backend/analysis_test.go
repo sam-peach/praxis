@@ -78,7 +78,7 @@ func TestParseQuantity_NormalizedEqualsValue(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// unitCompatible
+// unitCompatible — expanded wiring-harness unit set
 // ----------------------------------------------------------------------------
 
 func TestUnitCompatible(t *testing.T) {
@@ -86,20 +86,92 @@ func TestUnitCompatible(t *testing.T) {
 		a, b string
 		want bool
 	}{
+		// existing
 		{"M", "M", true},
 		{"M", "METRES", true},
 		{"METER", "M", true},
-		{"MM", "M", false},   // millimetres ≠ metres
+		{"MM", "M", false}, // millimetres ≠ metres — still a conflict
 		{"EA", "EACH", true},
 		{"EA", "M", false},
 		{"MM", "MILLIMETRES", true},
 		{"KG", "KILOGRAMS", true},
 		{"KG", "EA", false},
 		{"", "", false},
+		// new wiring-harness units
+		{"FT", "FEET", true},
+		{"FT", "FOOT", true},
+		{"FEET", "FOOT", true},
+		{"IN", "INCH", true},
+		{"IN", "INCHES", true},
+		{"CM", "CENTIMETRE", true},
+		{"CM", "CENTIMETERS", true},
+		{"PR", "PAIR", true},
+		{"PR", "PAIRS", true},
+		{"SET", "SETS", true},
+		{"LOT", "LOTS", true},
+		{"MTR", "M", true},
+		{"MTR", "METRES", true},
+		{"PCS", "PC", true},
+		{"PCS", "PIECE", true},
+		{"PCS", "PIECES", true},
+		{"FT", "M", false},  // different dimension families
+		{"PR", "EA", false}, // pairs ≠ each
 	}
 	for _, tc := range tests {
 		got := unitCompatible(tc.a, tc.b)
 		assert.Equal(t, tc.want, got, "unitCompatible(%q, %q)", tc.a, tc.b)
+	}
+}
+
+func TestParseQuantity_CanonicalUnitNormalization(t *testing.T) {
+	// When inline unit is an alias, the stored unit should be the canonical form.
+	tests := []struct {
+		raw          string
+		declared     string
+		wantUnit     string
+		wantAmbiguous bool
+	}{
+		{"3 EACH", "EA", "EA", false},   // EACH → EA
+		{"5 METRES", "M", "M", false},   // METRES → M
+		{"2 FEET", "FT", "FT", false},   // FEET → FT
+		{"10 PCS", "EA", "EA", false},   // PCS → EA (compatible)
+		{"4 PAIRS", "PR", "PR", false},  // PAIRS → PR
+		{"1 SET", "SET", "SET", false},  // SET stays SET
+		{"6 MTR", "M", "M", false},      // MTR → M
+	}
+	for _, tc := range tests {
+		q := parseQuantity(tc.raw, tc.declared)
+		require.NotNil(t, q.Unit, "unit should be set for %q", tc.raw)
+		assert.Equal(t, tc.wantUnit, *q.Unit, "canonical unit for %q", tc.raw)
+		if tc.wantAmbiguous {
+			assert.Contains(t, q.Flags, "unit_ambiguous", "should flag ambiguous for %q", tc.raw)
+		} else {
+			assert.NotContains(t, q.Flags, "unit_ambiguous", "should not flag for %q", tc.raw)
+		}
+	}
+}
+
+func TestParseQuantity_WiringHarnessUnits(t *testing.T) {
+	// Spot-check quantities that appear on real harness drawings.
+	tests := []struct {
+		raw       string
+		declared  string
+		wantValue float64
+		wantUnit  string
+	}{
+		{"2PR", "PR", 2, "PR"},
+		{"10FT", "FT", 10, "FT"},
+		{"0.5M", "M", 0.5, "M"},
+		{"1LOT", "LOT", 1, "LOT"},
+		{"3SET", "SET", 3, "SET"},
+	}
+	for _, tc := range tests {
+		q := parseQuantity(tc.raw, tc.declared)
+		require.NotNil(t, q.Value, "value should parse for %q", tc.raw)
+		assert.Equal(t, tc.wantValue, *q.Value, "value for %q", tc.raw)
+		require.NotNil(t, q.Unit, "unit should be set for %q", tc.raw)
+		assert.Equal(t, tc.wantUnit, *q.Unit, "unit for %q", tc.raw)
+		assert.NotContains(t, q.Flags, "unit_ambiguous", "should not flag for %q", tc.raw)
 	}
 }
 

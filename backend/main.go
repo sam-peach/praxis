@@ -111,6 +111,7 @@ func main() {
 	mux.HandleFunc("GET /api/documents/{id}", srv.requireAuth(srv.get))
 	mux.HandleFunc("GET /api/documents/{id}/bom.csv", srv.requireAuth(srv.exportCSV))
 	mux.HandleFunc("PUT /api/documents/{id}/bom", srv.requireAuth(srv.saveBOM))
+	mux.HandleFunc("GET /api/mappings/suggest", srv.requireAuth(srv.suggestMappings)) // must be before /api/mappings
 	mux.HandleFunc("GET /api/mappings", srv.requireAuth(srv.listMappings))
 	mux.HandleFunc("POST /api/mappings/upload", srv.requireAuth(srv.uploadMappings)) // must be before /api/mappings
 	mux.HandleFunc("POST /api/mappings", srv.requireAuth(srv.saveMapping))

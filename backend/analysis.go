@@ -282,27 +282,59 @@ func parseQuantity(rawStr, declaredUnit string) Quantity {
 	}
 	q.Value = &val
 
-	inlineUnit := strings.ToUpper(strings.TrimSpace(m[2]))
-	canonical := strings.ToUpper(strings.TrimSpace(declaredUnit))
+	inlineUnit := canonicalUnit(strings.ToUpper(strings.TrimSpace(m[2])))
+	canonical := canonicalUnit(strings.ToUpper(strings.TrimSpace(declaredUnit)))
 
 	switch {
 	case inlineUnit != "" && canonical != "" && !unitCompatible(inlineUnit, canonical):
 		// The drawing wrote e.g. "150mm" but the LLM declared unit "M" — conflict.
 		q.Flags = append(q.Flags, "unit_ambiguous")
-		u := inlineUnit
-		q.Unit = &u
+		q.Unit = &inlineUnit
 	case inlineUnit != "":
-		u := inlineUnit
-		q.Unit = &u
+		q.Unit = &inlineUnit
 	case canonical != "":
-		u := canonical
-		q.Unit = &u
+		q.Unit = &canonical
 	}
 
 	// Normalized: same as Value for now — we do not silently transform units.
 	q.Normalized = q.Value
 
 	return q
+}
+
+// unitAliases maps every known unit alias to its canonical form.
+// Canonical forms are the shortest, most-recognised abbreviation for the unit.
+var unitAliases = map[string]string{
+	// metres
+	"M": "M", "METRES": "M", "METER": "M", "METERS": "M", "MTR": "M",
+	// millimetres
+	"MM": "MM", "MILLIMETRES": "MM", "MILLIMETERS": "MM",
+	// centimetres
+	"CM": "CM", "CENTIMETRE": "CM", "CENTIMETRES": "CM", "CENTIMETER": "CM", "CENTIMETERS": "CM",
+	// feet
+	"FT": "FT", "FEET": "FT", "FOOT": "FT",
+	// inches
+	"IN": "IN", "INCH": "IN", "INCHES": "IN",
+	// each / piece
+	"EA": "EA", "EACH": "EA", "PCS": "EA", "PC": "EA", "PIECE": "EA", "PIECES": "EA",
+	// pair
+	"PR": "PR", "PAIR": "PR", "PAIRS": "PR",
+	// set
+	"SET": "SET", "SETS": "SET",
+	// lot
+	"LOT": "LOT", "LOTS": "LOT",
+	// mass
+	"KG": "KG", "KILOGRAMS": "KG", "KILOGRAM": "KG",
+	"G": "G", "GRAMS": "G", "GRAM": "G",
+}
+
+// canonicalUnit returns the canonical unit string for a given alias,
+// or the input unchanged if it is not in the alias table.
+func canonicalUnit(u string) string {
+	if c, ok := unitAliases[u]; ok {
+		return c
+	}
+	return u
 }
 
 // unitCompatible returns true when the two unit strings refer to the same unit.
@@ -313,13 +345,7 @@ func unitCompatible(a, b string) bool {
 	if a == b {
 		return true
 	}
-	canon := map[string]string{
-		"M": "M", "METRES": "M", "METER": "M", "METERS": "M",
-		"MM": "MM", "MILLIMETRES": "MM", "MILLIMETERS": "MM",
-		"EA": "EA", "EACH": "EA", "PCS": "EA", "PC": "EA",
-		"KG": "KG", "KILOGRAMS": "KG",
-	}
-	ca, cb := canon[a], canon[b]
+	ca, cb := unitAliases[a], unitAliases[b]
 	return ca != "" && ca == cb
 }
 

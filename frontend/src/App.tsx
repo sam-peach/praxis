@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import type { BOMRow, Document, DocumentStatus, Mapping } from './types/api'
-import { analyzeDocument, checkAuth, exportCSVUrl, login, logout, saveBOM, saveMapping, uploadDocument } from './api/client'
+import { analyzeDocument, checkAuth, exportCSVUrl, exportTSVUrl, login, logout, saveBOM, saveMapping, uploadDocument } from './api/client'
 import BomTable from './components/BomTable'
 import { LogoWordmark } from './components/Logo'
 import LoginPage from './components/LoginPage'
@@ -94,6 +94,27 @@ export default function App() {
     setSaved(false)
   }
 
+  const [copied, setCopied] = useState(false)
+
+  function handleCopyForSAP() {
+    const header = ['Line', 'Description', 'Quantity', 'Unit', 'Customer Part Number', 'Internal Part Number', 'Manufacturer Part Number', 'Notes']
+    const dataRows = rows.map(r => [
+      String(r.lineNumber),
+      r.description,
+      r.quantity.value != null ? String(r.quantity.value) : r.quantity.raw,
+      r.quantity.unit ?? '',
+      r.customerPartNumber,
+      r.internalPartNumber,
+      r.manufacturerPartNumber,
+      r.notes,
+    ])
+    const tsv = [header, ...dataRows].map(row => row.join('\t')).join('\n')
+    navigator.clipboard.writeText(tsv).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
   const hasResults = doc?.status === 'done' && rows.length > 0
 
   if (authed === null) return null
@@ -163,6 +184,12 @@ export default function App() {
                         <button style={saved ? savedBtn : secondaryBtn} onClick={handleSave}>
                           {saved ? 'Saved ✓' : 'Save Changes'}
                         </button>
+                        <button style={copied ? savedBtn : secondaryBtn} onClick={handleCopyForSAP}>
+                          {copied ? 'Copied ✓' : 'Copy for SAP'}
+                        </button>
+                        <a href={exportTSVUrl(doc.id)} style={secondaryBtn} download>
+                          Export TSV
+                        </a>
                         <a href={exportCSVUrl(doc.id)} style={secondaryBtn} download>
                           Export CSV
                         </a>

@@ -27,6 +27,9 @@ type mappingRepository interface {
 	lookup(customerPartNumber, orgID string) (*Mapping, bool)
 	all(orgID string) []*Mapping
 	touchLastUsed(customerPartNumber, orgID string)
+	// suggest returns up to limit mappings whose description or customer part
+	// number contains any token from the query string (case-insensitive).
+	suggest(query, orgID string, limit int) []*Mapping
 }
 
 // orgScopedMappings binds a mappingRepository to a fixed orgID, satisfying
@@ -66,6 +69,10 @@ func (r *inMemoryMappingRepository) all(_ string) []*Mapping {
 
 func (r *inMemoryMappingRepository) touchLastUsed(cpn, _ string) {
 	r.store.touchLastUsed(cpn)
+}
+
+func (r *inMemoryMappingRepository) suggest(query, _ string, limit int) []*Mapping {
+	return r.store.suggest(query, limit)
 }
 
 // ── pgMappingRepository ───────────────────────────────────────────────────────
@@ -148,6 +155,41 @@ func (r *pgMappingRepository) all(orgID string) []*Mapping {
 			&m.ManufacturerPartNumber, &m.Description, &m.Source, &m.Confidence,
 			&m.LastUsedAt, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			log.Printf("mapping scan error: %v", err)
+			continue
+		}
+		result = append(result, &m)
+	}
+	return result
+}
+
+func (r *pgMappingRepository) suggest(query, orgID string, limit int) []*Mapping {
+	if strings.TrimSpace(query) == "" {
+		return []*Mapping{}
+	}
+	pattern := "%" + strings.ToLower(query) + "%"
+	rows, err := r.db.Query(`
+		SELECT id, organization_id, customer_part_number, internal_part_number,
+		       manufacturer_part_number, description, source, confidence,
+		       last_used_at, created_at, updated_at
+		FROM mappings
+		WHERE organization_id = $1
+		  AND (LOWER(description) LIKE $2 OR LOWER(customer_part_number) LIKE $2)
+		ORDER BY last_used_at DESC
+		LIMIT $3`,
+		orgID, pattern, limit,
+	)
+	if err != nil {
+		log.Printf("mapping suggest error: %v", err)
+		return []*Mapping{}
+	}
+	defer rows.Close()
+	var result []*Mapping
+	for rows.Next() {
+		var m Mapping
+		if err := rows.Scan(&m.ID, &m.OrganizationID, &m.CustomerPartNumber, &m.InternalPartNumber,
+			&m.ManufacturerPartNumber, &m.Description, &m.Source, &m.Confidence,
+			&m.LastUsedAt, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			log.Printf("mapping suggest scan error: %v", err)
 			continue
 		}
 		result = append(result, &m)
@@ -285,6 +327,28 @@ func (s *mappingStore) all() []*Mapping {
 	out := make([]*Mapping, 0, len(s.data))
 	for _, m := range s.data {
 		out = append(out, m)
+	}
+	return out
+}
+
+// suggest returns up to limit mappings whose description or customer part number
+// contains the query string (case-insensitive).
+func (s *mappingStore) suggest(query string, limit int) []*Mapping {
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return []*Mapping{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []*Mapping
+	for _, m := range s.data {
+		if strings.Contains(strings.ToLower(m.Description), q) ||
+			strings.Contains(strings.ToLower(m.CustomerPartNumber), q) {
+			out = append(out, m)
+			if len(out) >= limit {
+				break
+			}
+		}
 	}
 	return out
 }

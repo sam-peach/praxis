@@ -61,8 +61,19 @@ export async function uploadMappingsCSV(file: File): Promise<{ saved: number; sk
   return res.json()
 }
 
+export async function suggestMappings(query: string): Promise<Mapping[]> {
+  if (!query.trim()) return []
+  const res = await fetch(`${BASE}/mappings/suggest?q=${encodeURIComponent(query)}`)
+  if (!res.ok) return []
+  return res.json()
+}
+
 export function exportCSVUrl(id: string): string {
   return `${BASE}/documents/${id}/bom.csv`
+}
+
+export function exportTSVUrl(id: string): string {
+  return `${BASE}/documents/${id}/bom.csv?format=tsv`
 }
 
 export async function checkAuth(): Promise<boolean> {

@@ -21,6 +21,7 @@ func newSettingsServer(t *testing.T) (*server, string) {
 	srv := &server{
 		store:    newStore(),
 		sessions: ss,
+		mappings: &inMemoryMappingRepository{store: &mappingStore{data: make(map[string]*Mapping), filePath: ""}},
 		userRepo: &memUserRepository{
 			users: map[string]*User{
 				"admin": {

@@ -129,9 +129,10 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-// GET /api/documents/{id}/bom.csv
-// SAP-compatible column order: Line, Description, Quantity (RAW), Unit,
+// GET /api/documents/{id}/bom.csv[?format=tsv]
+// SAP-compatible column order: Line, Description, Quantity (numeric), Unit,
 // Customer P/N, Internal P/N, Manufacturer P/N, Notes.
+// Pass ?format=tsv for tab-separated output suitable for SAP clipboard paste.
 func (s *server) exportCSV(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	doc, err := s.store.get(id)
@@ -140,22 +141,40 @@ func (s *server) exportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tsv := r.URL.Query().Get("format") == "tsv"
 	name := strings.TrimSuffix(doc.Filename, ".pdf")
-	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-bom.csv"`, name))
 
-	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{
+	if tsv {
+		w.Header().Set("Content-Type", "text/tab-separated-values; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-bom.tsv"`, name))
+	} else {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-bom.csv"`, name))
+	}
+
+	header := []string{
 		"Line", "Description", "Quantity", "Unit",
 		"Customer Part Number", "Internal Part Number", "Manufacturer Part Number", "Notes",
-	})
+	}
+
+	writeRow := func(fields []string) {
+		if tsv {
+			fmt.Fprintln(w, strings.Join(fields, "\t"))
+		} else {
+			cw := csv.NewWriter(w)
+			_ = cw.Write(fields)
+			cw.Flush()
+		}
+	}
+
+	writeRow(header)
 	for _, row := range doc.BOMRows {
-		qty := row.Quantity.Raw
+		qty := qtyString(row.Quantity)
 		unit := ""
 		if row.Quantity.Unit != nil {
 			unit = *row.Quantity.Unit
 		}
-		_ = cw.Write([]string{
+		writeRow([]string{
 			fmt.Sprintf("%d", row.LineNumber),
 			row.Description,
 			qty,
@@ -166,10 +185,24 @@ func (s *server) exportCSV(w http.ResponseWriter, r *http.Request) {
 			row.Notes,
 		})
 	}
-	cw.Flush()
+}
+
+// qtyString returns the parsed numeric value as a string when available,
+// falling back to the raw drawing text for unresolved quantities.
+func qtyString(q Quantity) string {
+	if q.Value != nil {
+		f := *q.Value
+		if f == float64(int(f)) {
+			return fmt.Sprintf("%d", int(f))
+		}
+		return fmt.Sprintf("%g", f)
+	}
+	return q.Raw
 }
 
 // PUT /api/documents/{id}/bom — persists client-side edits so CSV export stays current.
+// Auto-learn: rows with a customerPartNumber + internalPartNumber that have no
+// existing manual mapping are saved as "inferred" mappings for future suggestions.
 func (s *server) saveBOM(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	doc, err := s.store.get(id)
@@ -186,6 +219,35 @@ func (s *server) saveBOM(w http.ResponseWriter, r *http.Request) {
 
 	doc.BOMRows = rows
 	s.store.save(doc)
+
+	// Auto-learn: persist inferred mappings for rows that have both a customer
+	// part number and an internal part number, without overwriting manual entries.
+	sd := sessionFromContext(r)
+	for _, row := range rows {
+		cpn := strings.TrimSpace(row.CustomerPartNumber)
+		ipn := strings.TrimSpace(row.InternalPartNumber)
+		if cpn == "" || ipn == "" {
+			continue
+		}
+		// Do not overwrite existing manual or csv-upload mappings.
+		if existing, ok := s.mappings.lookup(cpn, sd.OrgID); ok {
+			if existing.Source == "manual" || existing.Source == "csv-upload" {
+				continue
+			}
+		}
+		m := &Mapping{
+			CustomerPartNumber:     cpn,
+			InternalPartNumber:     ipn,
+			ManufacturerPartNumber: row.ManufacturerPartNumber,
+			Description:            row.Description,
+			Source:                 "inferred",
+			Confidence:             0.8,
+		}
+		if err := s.mappings.save(m, sd.OrgID); err != nil {
+			log.Printf("auto-learn mapping save error for %q: %v", cpn, err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, doc)
 }
 
@@ -213,6 +275,18 @@ func (s *server) saveMapping(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("mapping saved: %s → internal=%s mfr=%s", m.CustomerPartNumber, m.InternalPartNumber, m.ManufacturerPartNumber)
 	writeJSON(w, http.StatusOK, &m)
+}
+
+// GET /api/mappings/suggest?q=<text> — returns up to 5 mappings whose
+// description or customer part number contains the query (case-insensitive).
+func (s *server) suggestMappings(w http.ResponseWriter, r *http.Request) {
+	sd := sessionFromContext(r)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	results := s.mappings.suggest(query, sd.OrgID, 5)
+	if results == nil {
+		results = []*Mapping{}
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 // GET /api/mappings — list all stored mappings.

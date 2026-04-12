@@ -1,5 +1,6 @@
-import { type CSSProperties, useState } from 'react'
+import { type CSSProperties, useEffect, useRef, useState } from 'react'
 import type { BOMRow, Mapping, Quantity } from '../types/api'
+import { suggestMappings } from '../api/client'
 import { colors, radius } from '../theme'
 
 interface Props {
@@ -118,6 +119,40 @@ function BomRow({
   onSaveMapping: Props['onSaveMapping']
 }) {
   const [mappingSaved, setMappingSaved] = useState(false)
+  const [suggestions, setSuggestions] = useState<Mapping[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false)
+  const suggestRef = useRef<HTMLTableCellElement>(null)
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (suggestRef.current && !suggestRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  async function handleSuggest() {
+    const query = (row.description || row.customerPartNumber || '').trim()
+    if (!query) return
+    setLoadingSuggestions(true)
+    setShowSuggestions(true)
+    try {
+      const results = await suggestMappings(query)
+      setSuggestions(results)
+    } finally {
+      setLoadingSuggestions(false)
+    }
+  }
+
+  function applySuggestion(m: Mapping) {
+    if (m.internalPartNumber) onUpdate(index, 'internalPartNumber', m.internalPartNumber)
+    if (m.manufacturerPartNumber) onUpdate(index, 'manufacturerPartNumber', m.manufacturerPartNumber)
+    if (m.customerPartNumber && !row.customerPartNumber) onUpdate(index, 'customerPartNumber', m.customerPartNumber)
+    setShowSuggestions(false)
+  }
 
   async function handleSaveMapping() {
     await onSaveMapping({
@@ -133,6 +168,7 @@ function BomRow({
 
   const canSaveMapping = row.customerPartNumber.trim() !== ''
   const qtyAmbiguous = row.quantity.flags.includes('unit_ambiguous')
+  const needsMapping = !row.internalPartNumber
 
   return (
     <tr style={rowTint(row)}>
@@ -187,9 +223,39 @@ function BomRow({
         <input className="bom-input" value={row.customerPartNumber}
           onChange={(e) => onUpdate(index, 'customerPartNumber', e.target.value)} />
       </td>
-      <td style={td}>
-        <input className="bom-input" value={row.internalPartNumber}
-          onChange={(e) => onUpdate(index, 'internalPartNumber', e.target.value)} />
+      <td style={{ ...td, position: 'relative' }} ref={suggestRef}>
+        <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
+          <input className="bom-input" value={row.internalPartNumber}
+            onChange={(e) => onUpdate(index, 'internalPartNumber', e.target.value)} />
+          {needsMapping && (
+            <button
+              onClick={handleSuggest}
+              title="Suggest mappings from description"
+              style={suggestBtn}
+            >
+              {loadingSuggestions ? '…' : '?'}
+            </button>
+          )}
+        </div>
+        {showSuggestions && (
+          <div style={suggestPopover}>
+            {suggestions.length === 0 && !loadingSuggestions && (
+              <div style={suggestEmpty}>No matches found</div>
+            )}
+            {suggestions.map(m => (
+              <button key={m.customerPartNumber} style={suggestItem} onClick={() => applySuggestion(m)}>
+                <span style={{ fontWeight: 600, color: colors.text, fontSize: 12 }}>
+                  {m.internalPartNumber || m.customerPartNumber}
+                </span>
+                {m.description && (
+                  <span style={{ color: colors.textMuted, fontSize: 11, marginLeft: 6 }}>
+                    {m.description.length > 40 ? m.description.slice(0, 40) + '…' : m.description}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </td>
       <td style={td}>
         <input className="bom-input" value={row.manufacturerPartNumber}
@@ -375,4 +441,52 @@ const savedMappingBtn: CSSProperties = {
   background:  colors.successBg,
   color:       colors.successText,
   borderColor: colors.successBorder,
+}
+
+const suggestBtn: CSSProperties = {
+  flexShrink:   0,
+  width:        20,
+  height:       20,
+  padding:      0,
+  fontSize:     11,
+  fontWeight:   700,
+  lineHeight:   1,
+  background:   colors.brandLight,
+  color:        colors.brand,
+  border:       `1px solid ${colors.brand}`,
+  borderRadius: radius.sm,
+  cursor:       'pointer',
+}
+
+const suggestPopover: CSSProperties = {
+  position:     'absolute',
+  top:          '100%',
+  left:         0,
+  zIndex:       200,
+  background:   colors.surface,
+  border:       `1px solid ${colors.border}`,
+  borderRadius: radius.md,
+  boxShadow:    '0 4px 12px rgba(0,0,0,0.1)',
+  minWidth:     260,
+  maxWidth:     340,
+  overflow:     'hidden',
+}
+
+const suggestItem: CSSProperties = {
+  display:     'flex',
+  alignItems:  'center',
+  width:       '100%',
+  padding:     '7px 10px',
+  background:  'none',
+  border:      'none',
+  borderBottom: `1px solid ${colors.borderLight}`,
+  cursor:      'pointer',
+  textAlign:   'left',
+}
+
+const suggestEmpty: CSSProperties = {
+  padding:   '10px',
+  fontSize:  12,
+  color:     colors.textMuted,
+  textAlign: 'center',
 }
