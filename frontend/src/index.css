@@ -1,0 +1,51 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #fff;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* BOM table inputs look like editable fields by default, not invisible text */
+.bom-input {
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #f8fafc;
+  width: 100%;
+  outline: none;
+  transition: border-color 0.1s, background 0.1s, box-shadow 0.1s;
+}
+
+.bom-input:hover {
+  background: #fff;
+  border-color: #cbd5e1;
+}
+
+.bom-input:focus {
+  background: #fff;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: spin 0.65s linear infinite;
+  vertical-align: middle;
+  margin-right: 7px;
+  position: relative;
+  top: -1px;
+}

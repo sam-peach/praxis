@@ -1,0 +1,3 @@
+anthropic_api_key = "sk-ant-..."
+auth_username     = "admin"
+auth_password     = "change-me"

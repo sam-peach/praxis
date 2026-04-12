@@ -1,0 +1,132 @@
+package main
+
+import (
+	"bufio"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+func main() {
+	loadDotEnv(".env")
+
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		log.Println("ANTHROPIC_API_KEY not set — analysis will use mock data")
+	}
+
+	authUsername := os.Getenv("AUTH_USERNAME")
+	authPassword := os.Getenv("AUTH_PASSWORD")
+	if authUsername == "" || authPassword == "" {
+		log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
+	}
+
+	uploadDir := "./uploads"
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		log.Fatalf("failed to create upload directory: %v", err)
+	}
+
+	dataDir := os.Getenv("DATA_DIR")
+	if dataDir == "" {
+		dataDir = "./data"
+	}
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		log.Fatalf("failed to create data directory: %v", err)
+	}
+
+	ms, err := newMappingStore(filepath.Join(dataDir, "mappings.json"))
+	if err != nil {
+		log.Fatalf("mapping store: %v", err)
+	}
+
+	srv := &server{
+		store:        newStore(),
+		mappings:     ms,
+		sessions:     newSessionStore(24 * time.Hour),
+		uploadDir:    uploadDir,
+		apiKey:       apiKey,
+		authUsername: authUsername,
+		authPassword: authPassword,
+	}
+
+	staticDir := os.Getenv("STATIC_DIR")
+	if staticDir == "" {
+		staticDir = "./static"
+	}
+
+	mux := http.NewServeMux()
+
+	// Public routes (no auth required)
+	mux.HandleFunc("GET /api/documents/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("POST /api/auth/login", srv.login)
+
+	// Protected routes
+	mux.HandleFunc("POST /api/auth/logout", srv.requireAuth(srv.logout))
+	mux.HandleFunc("GET /api/auth/me", srv.requireAuth(srv.authMe))
+	mux.HandleFunc("POST /api/documents/upload", srv.requireAuth(srv.upload))
+	mux.HandleFunc("POST /api/documents/{id}/analyze", srv.requireAuth(srv.analyze))
+	mux.HandleFunc("GET /api/documents/{id}", srv.requireAuth(srv.get))
+	mux.HandleFunc("GET /api/documents/{id}/bom.csv", srv.requireAuth(srv.exportCSV))
+	mux.HandleFunc("PUT /api/documents/{id}/bom", srv.requireAuth(srv.saveBOM))
+	mux.HandleFunc("GET /api/mappings", srv.requireAuth(srv.listMappings))
+	mux.HandleFunc("POST /api/mappings/upload", srv.requireAuth(srv.uploadMappings)) // must be before /api/mappings
+	mux.HandleFunc("POST /api/mappings", srv.requireAuth(srv.saveMapping))
+
+	if _, err := os.Stat(staticDir); err == nil {
+		mux.Handle("/", http.FileServer(http.Dir(staticDir)))
+	}
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Printf("listening on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, cors(mux)))
+}
+
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		if key != "" && os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
+}
+
+func cors(next http.Handler) http.Handler {
+	origin := os.Getenv("CORS_ORIGIN")
+	if origin == "" {
+		origin = "*"
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}

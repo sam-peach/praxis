@@ -1,0 +1,23 @@
+# Environment / secrets
+.env
+
+# Go build output
+backend/uploads/
+backend/tmp/
+backend/sme-prototype
+backend/data/
+backend/.tmp
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/terraform.tfvars
+
+# Claude Code local config
+.claude/
