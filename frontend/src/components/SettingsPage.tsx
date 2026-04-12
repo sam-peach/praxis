@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { changePassword } from '../api/client'
-import { LogoWordmark } from './Logo'
 import { colors, font, radius, shadow } from '../theme'
 
 export default function SettingsPage() {
@@ -42,27 +41,17 @@ export default function SettingsPage() {
   }
 
   return (
-    <div style={{ fontFamily: font.body, minHeight: '100vh', background: colors.bg, color: colors.text }}>
+    <main style={mainStyle}>
 
-      {/* ── Nav (mirrors App header) ─────────────────────────────────────── */}
-      <header style={navHeader}>
-        <div style={navInner}>
-          <LogoWordmark size={28} />
-          <button style={ghostBtn} onClick={() => navigate('/')}>← Back</button>
-        </div>
-      </header>
-
-      {/* ── Content ──────────────────────────────────────────────────────── */}
-      <main style={mainStyle}>
-
-        <div style={{ marginBottom: 28 }}>
-          <h1 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>
-            Settings
-          </h1>
-          <p style={{ margin: 0, color: colors.textMuted, fontSize: 14 }}>
-            Manage your account settings.
-          </p>
-        </div>
+      <div style={{ marginBottom: 28 }}>
+        <button style={backBtn} onClick={() => navigate('/')}>← Back</button>
+        <h1 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>
+          Settings
+        </h1>
+        <p style={{ margin: 0, color: colors.textMuted, fontSize: 14 }}>
+          Manage your account settings.
+        </p>
+      </div>
 
         <section style={card}>
           <h2 style={{ margin: '0 0 20px', fontSize: 15, fontWeight: 600, color: colors.text }}>
@@ -106,8 +95,7 @@ export default function SettingsPage() {
           </form>
         </section>
 
-      </main>
-    </div>
+    </main>
   )
 }
 
@@ -144,24 +132,6 @@ function Field({
 
 // ── Styles ──────────────────────────────────────────────────────────────────
 
-const navHeader: React.CSSProperties = {
-  position:   'sticky',
-  top:        0,
-  zIndex:     100,
-  background: colors.surface,
-  boxShadow:  shadow.header,
-}
-
-const navInner: React.CSSProperties = {
-  maxWidth:       1200,
-  margin:         '0 auto',
-  padding:        '0 24px',
-  height:         58,
-  display:        'flex',
-  alignItems:     'center',
-  justifyContent: 'space-between',
-}
-
 const mainStyle: React.CSSProperties = {
   maxWidth: 1200,
   margin:   '0 auto',
@@ -189,14 +159,15 @@ const primaryBtn: React.CSSProperties = {
   fontFamily:   font.body,
 }
 
-const ghostBtn: React.CSSProperties = {
-  padding:      '7px 14px',
-  background:   'transparent',
+const backBtn: React.CSSProperties = {
+  display:      'inline-block',
+  marginBottom: 12,
+  padding:      '6px 0',
+  background:   'none',
+  border:       'none',
   color:        colors.textMuted,
-  border:       `1px solid ${colors.border}`,
-  borderRadius: radius.md,
   cursor:       'pointer',
-  fontSize:     14,
+  fontSize:     13,
   fontFamily:   font.body,
 }
 
