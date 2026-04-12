@@ -30,16 +30,9 @@ export default function LoginPage({ onLogin }: Props) {
       <div className="fade-up" style={card}>
 
         {/* Brand */}
-        <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ marginBottom: 10 }}>
-            <LogoWordmark size={42} />
-          </div>
-          <p style={{ margin: 0, color: colors.textMuted, fontSize: 13.5, lineHeight: 1.6 }}>
-            Intelligent BOM extraction for<br />wiring harness manufacturers
-          </p>
+        <div style={{ marginBottom: 32 }}>
+          <LogoWordmark size={52} />
         </div>
-
-        <div style={{ height: 1, background: colors.border, marginBottom: 24 }} />
 
         {error && (
           <div style={errorBox}>{error}</div>
@@ -91,9 +84,9 @@ const overlay: React.CSSProperties = {
 const card: React.CSSProperties = {
   background:   colors.surface,
   borderRadius: radius.xl,
-  padding:      '44px 40px',
+  padding:      '40px 36px',
   width:        '100%',
-  maxWidth:     400,
+  maxWidth:     380,
   boxShadow:    shadow.login,
 }
 

@@ -52,5 +52,5 @@ export const radius = {
 
 export const font = {
   body:  "'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-  brand: "'Syne', -apple-system, sans-serif",
+  brand: "'Helvetica Neue', Helvetica, Arial, sans-serif",
 } as const

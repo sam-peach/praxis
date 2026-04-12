@@ -23,17 +23,19 @@ export function LogoWordmark({
   size?:     number
   inverted?: boolean
 }) {
+  const color    = inverted ? '#ffffff' : colors.text
+  const fontSize = Math.round(size * 0.72)
+
   return (
     <span style={{
       fontFamily:    font.brand,
-      fontSize:      Math.round(size * 0.65),
-      fontWeight:    700,
-      letterSpacing: '-0.03em',
-      color:         inverted ? '#fff' : colors.text,
+      fontSize,
+      letterSpacing: '-0.04em',
       lineHeight:    1,
       userSelect:    'none',
     }}>
-      CairnWorks
+      <span style={{ fontWeight: 200, color }}>Cairn</span>
+      <span style={{ fontWeight: 800, color }}>Works</span>
     </span>
   )
 }
