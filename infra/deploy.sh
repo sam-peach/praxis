@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_NAME="sme-prototype"
+APP_NAME="bomsmith"
 
 REGION=$(terraform -chdir="$SCRIPT_DIR" output -raw region)
 ECR_URL=$(terraform -chdir="$SCRIPT_DIR" output -raw ecr_url)

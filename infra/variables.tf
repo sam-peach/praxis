@@ -7,7 +7,7 @@ variable "region" {
 variable "app_name" {
   description = "Name used for all resources"
   type        = string
-  default     = "sme-prototype"
+  default     = "bomsmith"
 }
 
 variable "anthropic_api_key" {
@@ -36,7 +36,7 @@ variable "org_name" {
 variable "db_username" {
   description = "Postgres master username for the RDS instance"
   type        = string
-  default     = "praxis"
+  default     = "bomsmith"
 }
 
 variable "db_password" {
@@ -48,5 +48,5 @@ variable "db_password" {
 variable "github_repo" {
   description = "GitHub repository in owner/repo format — scopes the OIDC deploy role to this repo's main branch"
   type        = string
-  default     = "sam-peach/praxis"
+  default     = "sam-peach/BOMsmith"
 }

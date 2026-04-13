@@ -1,4 +1,4 @@
-module sme-prototype
+module bomsmith
 
 go 1.25.0
 

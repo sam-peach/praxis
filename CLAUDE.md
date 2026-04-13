@@ -1,4 +1,4 @@
-# sme-prototype — Claude Code Guidelines
+# BOMsmith — Claude Code Guidelines
 
 ## 1. Test-Driven Development (TDD)
 

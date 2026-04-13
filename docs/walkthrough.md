@@ -58,7 +58,7 @@ The entire application is a single binary. In production the Go server serves th
 ## 2. Repository layout
 
 ```
-praxis/
+BOMsmith/
 ├── backend/
 │   ├── main.go          Server wiring: env, stores, routes, CORS
 │   ├── auth.go          Session store, login/logout handlers, requireAuth middleware
@@ -512,7 +512,7 @@ In the Docker container the data directory is at the path set by `DATA_DIR` (def
 │  AWS                                                         │
 │                                                              │
 │  ECR Repository                                              │
-│    └─ sme-prototype:latest  (linux/amd64 Docker image)       │
+│    └─ bomsmith:latest  (linux/amd64 Docker image)            │
 │                                                              │
 │  App Runner Service                                          │
 │    ├─ Pulls from ECR on deployment                           │
@@ -526,7 +526,7 @@ In the Docker container the data directory is at the path set by `DATA_DIR` (def
 ### Docker image (multi-stage)
 
 1. **Stage 1** (`node:20-alpine`) — `npm ci && npm run build` → `frontend/dist/`
-2. **Stage 2** (`golang:1.24-alpine`) — `go build -o sme-prototype` → single binary
+2. **Stage 2** (`golang:1.24-alpine`) — `go build -o bomsmith` → single binary
 3. **Stage 3** (`alpine:3.20`) — copies binary + `frontend/dist/` as `./static`
 
 At runtime, Go serves the React bundle as static files. The API and frontend share the same origin — no CORS issues in production.
