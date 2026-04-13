@@ -11,7 +11,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Stage 2 — build the Go binary
-FROM --platform=linux/amd64 golang:1.24-alpine AS builder
+FROM --platform=linux/amd64 golang:1.25-alpine AS builder
 WORKDIR /backend
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
