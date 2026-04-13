@@ -82,21 +82,29 @@ WHAT TO EXTRACT AND HOW:
    HS1, HS2… — plain heatshrink sleeving, quantity in metres.
    HM1, HM2… — heatshrink cable markers, quantity in metres (per-marker length × count).
 
+TYPE REFERENCE TABLES — do NOT emit as BOM rows
+   Sheet 3 may contain "Heatshrink & Cable Sleeve Type Reference" or similar tables
+   whose columns are Type No. | Specification | Approvals | Comments.
+   These are specification catalogues, not BOM items — they list what HS1/SL2/HM3 etc.
+   mean, not how many are needed. Set "reference_entry": true for any row sourced from
+   such a table. The backend will filter them out before presenting results to the user.
+
 OUTPUT FORMAT
 Single valid JSON array. No markdown. No code fences. Begin with [.
 
 Each element must have exactly these fields:
-  rawLabel               (string) — label as it appears on the drawing
-  description            (string) — clear engineering description including key spec
-  rawQuantity            (string) — quantity EXACTLY as written on the drawing; NEVER transform
-  unit                   (string) — canonical unit: EA for each, M for metres
-  customerPartNumber     (string) — "" for wiring harness drawings
-  manufacturerPartNumber (string) — from Part Reference table; "" if absent
-  supplierReference      (string) — RS or Farnell distributor code if present; "" otherwise
-  notes                  (string) — concise; "" if nothing to flag
-  confidence             (number) — 0.0–1.0
-  flags                  (array)  — subset of: needs-review, low-confidence, ambiguous-spec,
-                                    dimension-estimated, missing-manufacturer-pn
+  rawLabel               (string)  — label as it appears on the drawing
+  description            (string)  — clear engineering description including key spec
+  rawQuantity            (string)  — quantity EXACTLY as written on the drawing; NEVER transform
+  unit                   (string)  — canonical unit: EA for each, M for metres
+  customerPartNumber     (string)  — "" for wiring harness drawings
+  manufacturerPartNumber (string)  — from Part Reference table; "" if absent
+  supplierReference      (string)  — RS or Farnell distributor code if present; "" otherwise
+  notes                  (string)  — concise; "" if nothing to flag
+  confidence             (number)  — 0.0–1.0
+  flags                  (array)   — subset of: needs-review, low-confidence, ambiguous-spec,
+                                     dimension-estimated, missing-manufacturer-pn
+  reference_entry        (boolean) — true if this row comes from a type reference table; omit or false otherwise
 
 RULES
 - Do not invent part numbers or quantities
@@ -180,6 +188,7 @@ type llmRow struct {
 	Notes                  string   `json:"notes"`
 	Confidence             float64  `json:"confidence"`
 	Flags                  []string `json:"flags"`
+	ReferenceEntry         bool     `json:"reference_entry,omitempty"` // true for type-reference table rows
 }
 
 // parseBOMRows converts the raw LLM text into BOMRows and runs post-processing.
@@ -225,6 +234,9 @@ func parseBOMRows(text string, ms mappingReader) ([]BOMRow, []string, error) {
 
 	rows := make([]BOMRow, 0, len(raw))
 	for i, r := range raw {
+		if r.ReferenceEntry {
+			continue // type-reference table rows are spec catalogues, not BOM items
+		}
 		if r.Flags == nil {
 			r.Flags = []string{}
 		}

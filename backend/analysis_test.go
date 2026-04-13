@@ -463,3 +463,46 @@ func TestParseBOMRows_ValidJSON_UnaffectedByRecoveryLogic(t *testing.T) {
 	require.Len(t, rows, 1)
 	assert.Empty(t, warnings)
 }
+
+// ----------------------------------------------------------------------------
+// Reference-entry filtering
+// ----------------------------------------------------------------------------
+
+func TestParseBOMRows_ReferenceEntry_IsFiltered(t *testing.T) {
+	// A type-reference row (reference_entry: true) must not appear in the output.
+	input := `[
+		{"rawLabel":"1","description":"Red wire","rawQuantity":"0.5","unit":"M","customerPartNumber":"","manufacturerPartNumber":"W-RED","supplierReference":"","notes":"","confidence":0.9,"flags":[]},
+		{"rawLabel":"HS1","description":"Polyolefin Heatshrink 3:1 3mm bore","rawQuantity":"","unit":"","customerPartNumber":"","manufacturerPartNumber":"","supplierReference":"","notes":"","confidence":0.9,"flags":[],"reference_entry":true}
+	]`
+
+	rows, _, err := parseBOMRows(input, nil)
+
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "reference_entry rows must be filtered out")
+	assert.Equal(t, "Red wire", rows[0].Description)
+}
+
+func TestParseBOMRows_ReferenceEntry_AllFiltered_ReturnsNoRowsWarning(t *testing.T) {
+	// If all rows are reference entries the result should be empty with the usual warning.
+	input := `[
+		{"rawLabel":"HS1","description":"Polyolefin Heatshrink","rawQuantity":"","unit":"","customerPartNumber":"","manufacturerPartNumber":"","supplierReference":"","notes":"","confidence":0.9,"flags":[],"reference_entry":true},
+		{"rawLabel":"SL1","description":"Expandable Sleeve","rawQuantity":"","unit":"","customerPartNumber":"","manufacturerPartNumber":"","supplierReference":"","notes":"","confidence":0.9,"flags":[],"reference_entry":true}
+	]`
+
+	rows, warnings, err := parseBOMRows(input, nil)
+
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "No BOM items")
+}
+
+func TestParseBOMRows_ReferenceEntryFalse_IsIncluded(t *testing.T) {
+	// reference_entry: false (explicit) should still be included.
+	input := `[{"rawLabel":"1","description":"Blue wire","rawQuantity":"1","unit":"M","customerPartNumber":"","manufacturerPartNumber":"W-BLUE","supplierReference":"","notes":"","confidence":0.9,"flags":[],"reference_entry":false}]`
+
+	rows, _, err := parseBOMRows(input, nil)
+
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+}
