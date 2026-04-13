@@ -17,3 +17,8 @@ output "rds_endpoint" {
   description = "RDS Postgres endpoint (host:port)"
   value       = "${aws_db_instance.postgres.address}:${aws_db_instance.postgres.port}"
 }
+
+output "github_deploy_role_arn" {
+  description = "Set this as AWS_ROLE_ARN in GitHub repository secrets"
+  value       = aws_iam_role.github_deploy.arn
+}

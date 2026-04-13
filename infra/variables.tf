@@ -44,3 +44,9 @@ variable "db_password" {
   type        = string
   sensitive   = true
 }
+
+variable "github_repo" {
+  description = "GitHub repository in owner/repo format — scopes the OIDC deploy role to this repo's main branch"
+  type        = string
+  default     = "sam-peach/praxis"
+}
