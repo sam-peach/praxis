@@ -17,13 +17,14 @@ import (
 )
 
 type server struct {
-	store     *documentStore
-	mappings  mappingRepository
-	sessions  *sessionStore
-	uploadDir string
-	apiKey    string
-	userRepo  userRepository
-	invites   inviteRepository
+	store       *documentStore
+	mappings    mappingRepository
+	sessions    *sessionStore
+	uploadDir   string
+	apiKey      string
+	userRepo    userRepository
+	invites     inviteRepository
+	orgSettings orgSettingsRepository
 }
 
 // POST /api/documents/upload
@@ -201,6 +202,118 @@ func qtyString(q Quantity) string {
 	return q.Raw
 }
 
+// GET /api/documents/{id}/export/sap — configurable TSV export suitable for
+// direct paste into SAP. Columns and header row are controlled by the org's
+// ExportConfig (see GET/PUT /api/org/export-config).
+func (s *server) exportSAP(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	doc, err := s.store.get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "document not found")
+		return
+	}
+
+	sd := sessionFromContext(r)
+	cfg := defaultExportConfig
+	if s.orgSettings != nil {
+		if c, err := s.orgSettings.getExportConfig(sd.OrgID); err == nil {
+			cfg = c
+		}
+	}
+
+	name := strings.TrimSuffix(doc.Filename, ".pdf")
+	w.Header().Set("Content-Type", "text/tab-separated-values; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-sap.tsv"`, name))
+
+	if cfg.IncludeHeader {
+		labels := make([]string, len(cfg.Columns))
+		for i, col := range cfg.Columns {
+			if label, ok := validExportColumns[col]; ok {
+				labels[i] = label
+			} else {
+				labels[i] = col
+			}
+		}
+		fmt.Fprintln(w, strings.Join(labels, "\t"))
+	}
+
+	for _, row := range doc.BOMRows {
+		// Omit rows where internalPartNumber is empty — they have nothing
+		// useful for SAP regardless of column config.
+		if strings.TrimSpace(row.InternalPartNumber) == "" {
+			continue
+		}
+		vals := make([]string, len(cfg.Columns))
+		for i, col := range cfg.Columns {
+			vals[i] = exportColumnValue(row, col)
+		}
+		fmt.Fprintln(w, strings.Join(vals, "\t"))
+	}
+}
+
+// exportColumnValue returns the string value of col for the given BOMRow.
+func exportColumnValue(row BOMRow, col string) string {
+	switch col {
+	case "lineNumber":
+		return fmt.Sprintf("%d", row.LineNumber)
+	case "description":
+		return row.Description
+	case "quantity":
+		return qtyString(row.Quantity)
+	case "unit":
+		if row.Quantity.Unit != nil {
+			return *row.Quantity.Unit
+		}
+		return ""
+	case "customerPartNumber":
+		return row.CustomerPartNumber
+	case "internalPartNumber":
+		return row.InternalPartNumber
+	case "manufacturerPartNumber":
+		return row.ManufacturerPartNumber
+	case "notes":
+		return row.Notes
+	default:
+		return ""
+	}
+}
+
+// GET /api/org/export-config — returns the org's SAP export configuration.
+func (s *server) getExportConfig(w http.ResponseWriter, r *http.Request) {
+	sd := sessionFromContext(r)
+	cfg, err := s.orgSettings.getExportConfig(sd.OrgID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load export config")
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// PUT /api/org/export-config — saves the org's SAP export configuration.
+func (s *server) saveExportConfig(w http.ResponseWriter, r *http.Request) {
+	var cfg ExportConfig
+	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(cfg.Columns) == 0 {
+		writeError(w, http.StatusBadRequest, "columns must not be empty")
+		return
+	}
+	for _, col := range cfg.Columns {
+		if _, ok := validExportColumns[col]; !ok {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown column %q", col))
+			return
+		}
+	}
+	sd := sessionFromContext(r)
+	if err := s.orgSettings.saveExportConfig(&cfg, sd.OrgID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save export config")
+		return
+	}
+	writeJSON(w, http.StatusOK, &cfg)
+}
+
 // PUT /api/documents/{id}/bom — persists client-side edits so CSV export stays current.
 // Auto-learn: rows with a customerPartNumber + internalPartNumber that have no
 // existing manual mapping are saved as "inferred" mappings for future suggestions.
@@ -221,25 +334,31 @@ func (s *server) saveBOM(w http.ResponseWriter, r *http.Request) {
 	doc.BOMRows = rows
 	s.store.save(doc)
 
-	// Auto-learn: persist inferred mappings for rows that have both a customer
-	// part number and an internal part number, without overwriting manual entries.
+	// Auto-learn: persist inferred mappings for rows that have both a lookup key
+	// (customerPartNumber, or manufacturerPartNumber when CPN is absent) and an
+	// internalPartNumber, without overwriting manual entries.
 	sd := sessionFromContext(r)
 	for _, row := range rows {
 		cpn := strings.TrimSpace(row.CustomerPartNumber)
+		mpn := strings.TrimSpace(row.ManufacturerPartNumber)
 		ipn := strings.TrimSpace(row.InternalPartNumber)
-		if cpn == "" || ipn == "" {
+		key := cpn
+		if key == "" {
+			key = mpn
+		}
+		if key == "" || ipn == "" {
 			continue
 		}
 		// Do not overwrite existing manual or csv-upload mappings.
-		if existing, ok := s.mappings.lookup(cpn, sd.OrgID); ok {
+		if existing, ok := s.mappings.lookup(key, sd.OrgID); ok {
 			if existing.Source == "manual" || existing.Source == "csv-upload" {
 				continue
 			}
 		}
 		m := &Mapping{
-			CustomerPartNumber:     cpn,
+			CustomerPartNumber:     key,
 			InternalPartNumber:     ipn,
-			ManufacturerPartNumber: row.ManufacturerPartNumber,
+			ManufacturerPartNumber: mpn,
 			Description:            row.Description,
 			Source:                 "inferred",
 			Confidence:             0.8,

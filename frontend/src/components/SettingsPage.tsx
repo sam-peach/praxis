@@ -1,7 +1,21 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { changePassword, createInvite } from '../api/client'
+import { changePassword, createInvite, getExportConfig, saveExportConfig } from '../api/client'
+import type { ExportConfig } from '../types/api'
 import { colors, font, radius, shadow } from '../theme'
+
+// ── Column catalogue ─────────────────────────────────────────────────────────
+
+const ALL_COLUMNS: { key: string; label: string }[] = [
+  { key: 'internalPartNumber',     label: 'Internal Part Number' },
+  { key: 'quantity',               label: 'Quantity' },
+  { key: 'unit',                   label: 'Unit' },
+  { key: 'description',            label: 'Description' },
+  { key: 'lineNumber',             label: 'Line' },
+  { key: 'customerPartNumber',     label: 'Customer Part Number' },
+  { key: 'manufacturerPartNumber', label: 'Manufacturer Part Number' },
+  { key: 'notes',                  label: 'Notes' },
+]
 
 export default function SettingsPage() {
   const navigate = useNavigate()
@@ -17,6 +31,15 @@ export default function SettingsPage() {
   const [inviteLoading,    setInviteLoading]    = useState(false)
   const [inviteError,      setInviteError]      = useState<string | null>(null)
   const [inviteCopied,     setInviteCopied]     = useState(false)
+
+  const [exportCfg,        setExportCfg]        = useState<ExportConfig>({ columns: ['internalPartNumber', 'quantity'], includeHeader: false })
+  const [exportSaving,     setExportSaving]     = useState(false)
+  const [exportError,      setExportError]      = useState<string | null>(null)
+  const [exportSuccess,    setExportSuccess]    = useState(false)
+
+  useEffect(() => {
+    getExportConfig().then(setExportCfg).catch(() => {})
+  }, [])
 
   async function handleCreateInvite() {
     setInviteError(null)
@@ -40,6 +63,47 @@ export default function SettingsPage() {
       setInviteCopied(true)
       setTimeout(() => setInviteCopied(false), 2000)
     })
+  }
+
+  function toggleExportColumn(key: string, checked: boolean) {
+    setExportCfg(prev => ({
+      ...prev,
+      columns: checked
+        ? [...prev.columns, key]
+        : prev.columns.filter(c => c !== key),
+    }))
+  }
+
+  function moveColumn(key: string, dir: -1 | 1) {
+    setExportCfg(prev => {
+      const cols = [...prev.columns]
+      const idx = cols.indexOf(key)
+      if (idx < 0) return prev
+      const next = idx + dir
+      if (next < 0 || next >= cols.length) return prev
+      ;[cols[idx], cols[next]] = [cols[next], cols[idx]]
+      return { ...prev, columns: cols }
+    })
+  }
+
+  async function handleSaveExportConfig(e: React.FormEvent) {
+    e.preventDefault()
+    setExportError(null)
+    setExportSuccess(false)
+    if (exportCfg.columns.length === 0) {
+      setExportError('At least one column must be selected.')
+      return
+    }
+    setExportSaving(true)
+    try {
+      const saved = await saveExportConfig(exportCfg)
+      setExportCfg(saved)
+      setExportSuccess(true)
+    } catch (e) {
+      setExportError((e as Error).message)
+    } finally {
+      setExportSaving(false)
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -115,6 +179,74 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
+        </section>
+
+        <section style={{ ...card, marginBottom: 16 }}>
+          <h2 style={{ margin: '0 0 8px', fontSize: 15, fontWeight: 600, color: colors.text }}>
+            SAP Export
+          </h2>
+          <p style={{ margin: '0 0 16px', fontSize: 13, color: colors.textMuted, lineHeight: 1.5 }}>
+            Choose which columns appear in the SAP export and their order.
+            Rows without an Internal Part Number are always omitted.
+          </p>
+
+          {exportError  && <div style={errorBanner}>{exportError}</div>}
+          {exportSuccess && <div style={successBanner}>Export settings saved.</div>}
+
+          <form onSubmit={handleSaveExportConfig}>
+            <div style={{ marginBottom: 16 }}>
+              {ALL_COLUMNS.map(({ key, label }) => {
+                const included = exportCfg.columns.includes(key)
+                const idx      = exportCfg.columns.indexOf(key)
+                return (
+                  <div key={key} style={columnRow}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={included}
+                        onChange={e => toggleExportColumn(key, e.target.checked)}
+                      />
+                      <span style={{ fontSize: 13 }}>{label}</span>
+                    </label>
+                    {included && (
+                      <div style={{ display: 'flex', gap: 2 }}>
+                        <button
+                          type="button"
+                          style={arrowBtn}
+                          disabled={idx === 0}
+                          onClick={() => moveColumn(key, -1)}
+                          aria-label="Move up"
+                        >↑</button>
+                        <button
+                          type="button"
+                          style={arrowBtn}
+                          disabled={idx === exportCfg.columns.length - 1}
+                          onClick={() => moveColumn(key, 1)}
+                          aria-label="Move down"
+                        >↓</button>
+                        <span style={{ fontSize: 11, color: colors.textMuted, minWidth: 18, textAlign: 'center', lineHeight: '26px' }}>
+                          {idx + 1}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={exportCfg.includeHeader}
+                onChange={e => setExportCfg(prev => ({ ...prev, includeHeader: e.target.checked }))}
+              />
+              <span style={{ fontSize: 13 }}>Include header row</span>
+            </label>
+
+            <button type="submit" style={primaryBtn} disabled={exportSaving}>
+              {exportSaving ? 'Saving…' : 'Save export settings'}
+            </button>
+          </form>
         </section>
 
         <section style={card}>
@@ -281,6 +413,26 @@ const inviteBox: React.CSSProperties = {
   background:   colors.bg,
   border:       `1px solid ${colors.border}`,
   borderRadius: radius.md,
+}
+
+const columnRow: React.CSSProperties = {
+  display:        'flex',
+  alignItems:     'center',
+  justifyContent: 'space-between',
+  padding:        '6px 0',
+  borderBottom:   `1px solid ${colors.border}`,
+}
+
+const arrowBtn: React.CSSProperties = {
+  padding:      '0 6px',
+  height:       26,
+  background:   colors.surface,
+  border:       `1px solid ${colors.border}`,
+  borderRadius: radius.sm,
+  cursor:       'pointer',
+  fontSize:     12,
+  color:        colors.text,
+  fontFamily:   font.body,
 }
 
 const inviteInput: React.CSSProperties = {

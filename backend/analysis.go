@@ -220,12 +220,14 @@ func parseBOMRows(text string, ms mappingReader) ([]BOMRow, []string, error) {
 		}
 		r.Confidence = clamp01(r.Confidence)
 
+		qty := parseQuantity(r.RawQuantity, r.Unit)
+		normaliseToMetres(&qty)
 		row := BOMRow{
 			ID:                     fmt.Sprintf("row-%d", i+1),
 			LineNumber:             i + 1,
 			RawLabel:               r.RawLabel,
 			Description:            r.Description,
-			Quantity:               parseQuantity(r.RawQuantity, r.Unit),
+			Quantity:               qty,
 			CustomerPartNumber:     r.CustomerPartNumber,
 			InternalPartNumber:     "",
 			ManufacturerPartNumber: r.ManufacturerPartNumber,
@@ -300,6 +302,26 @@ func parseQuantity(rawStr, declaredUnit string) Quantity {
 	q.Normalized = q.Value
 
 	return q
+}
+
+// normaliseToMetres converts MM or CM quantities to M in-place.
+// Raw is never modified. Value and Unit are updated only when both are set.
+func normaliseToMetres(q *Quantity) {
+	if q.Value == nil || q.Unit == nil {
+		return
+	}
+	switch *q.Unit {
+	case "MM":
+		v := *q.Value / 1000
+		q.Value = &v
+		m := "M"
+		q.Unit = &m
+	case "CM":
+		v := *q.Value / 100
+		q.Value = &v
+		m := "M"
+		q.Unit = &m
+	}
 }
 
 // unitAliases maps every known unit alias to its canonical form.
@@ -395,11 +417,19 @@ func enrichFromSupplierRef(row *BOMRow) {
 
 // applyMapping checks for a known mapping and fills in InternalPartNumber /
 // ManufacturerPartNumber from the stored record.
+// When CustomerPartNumber is empty, ManufacturerPartNumber is used as the key.
 func applyMapping(row *BOMRow, ms mappingReader) {
-	if ms == nil || row.CustomerPartNumber == "" {
+	if ms == nil {
 		return
 	}
-	m, ok := ms.lookup(row.CustomerPartNumber)
+	key := row.CustomerPartNumber
+	if key == "" {
+		key = row.ManufacturerPartNumber
+	}
+	if key == "" {
+		return
+	}
+	m, ok := ms.lookup(key)
 	if !ok {
 		return
 	}

@@ -143,6 +143,49 @@ func TestSaveBOM_AutoLearnDoesNotOverwriteManualMapping(t *testing.T) {
 	}
 }
 
+// TestSaveBOM_AutoLearnUsesMPNWhenNoCPN verifies that when a row has no
+// customerPartNumber but does have a manufacturerPartNumber + internalPartNumber,
+// the mapping is saved keyed by the MPN.
+func TestSaveBOM_AutoLearnUsesMPNWhenNoCPN(t *testing.T) {
+	srv, token := newSettingsServer(t)
+	doc := &Document{ID: "doc-mpn-1", Filename: "test.pdf", BOMRows: []BOMRow{}}
+	srv.store.save(doc)
+
+	rows := []BOMRow{
+		{
+			ID:                     "r1",
+			LineNumber:             1,
+			Description:            "Molex connector",
+			CustomerPartNumber:     "",
+			ManufacturerPartNumber: "43640-0300",
+			InternalPartNumber:     "CONN-001",
+			Quantity:               Quantity{Raw: "1", Flags: []string{}},
+			Flags:                  []string{},
+		},
+	}
+
+	body, _ := json.Marshal(rows)
+	req := authedRequest(http.MethodPut, "/api/documents/doc-mpn-1/bom", string(body), token)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "doc-mpn-1")
+	w := httptest.NewRecorder()
+
+	srv.saveBOM(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Mapping should be keyed by MPN.
+	m, ok := srv.mappings.lookup("43640-0300", "org-1")
+	if !ok {
+		t.Fatal("expected mapping keyed by MPN to be created")
+	}
+	if m.InternalPartNumber != "CONN-001" {
+		t.Errorf("InternalPartNumber: want %q, got %q", "CONN-001", m.InternalPartNumber)
+	}
+}
+
 // TestSaveBOM_AutoLearnSkipsRowsWithoutInternalPN verifies no mapping is
 // created when internalPartNumber is empty.
 func TestSaveBOM_AutoLearnSkipsRowsWithoutInternalPN(t *testing.T) {

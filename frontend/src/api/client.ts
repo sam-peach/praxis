@@ -1,4 +1,4 @@
-import type { BOMRow, Document, Mapping } from '../types/api'
+import type { BOMRow, Document, ExportConfig, Mapping } from '../types/api'
 
 const BASE = '/api'
 
@@ -74,6 +74,26 @@ export function exportCSVUrl(id: string): string {
 
 export function exportTSVUrl(id: string): string {
   return `${BASE}/documents/${id}/bom.csv?format=tsv`
+}
+
+export function exportSAPUrl(id: string): string {
+  return `${BASE}/documents/${id}/export/sap`
+}
+
+export async function getExportConfig(): Promise<ExportConfig> {
+  const res = await fetch(`${BASE}/org/export-config`)
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
+export async function saveExportConfig(cfg: ExportConfig): Promise<ExportConfig> {
+  const res = await fetch(`${BASE}/org/export-config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
 }
 
 export async function checkAuth(): Promise<boolean> {

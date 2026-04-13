@@ -33,6 +33,11 @@ export interface Document {
   warnings: string[]
 }
 
+export interface ExportConfig {
+  columns: string[]
+  includeHeader: boolean
+}
+
 export interface Mapping {
   id: string
   customerPartNumber: string

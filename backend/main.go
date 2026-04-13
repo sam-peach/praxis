@@ -24,9 +24,10 @@ func main() {
 	}
 
 	var (
-		mappings mappingRepository
-		userRepo userRepository
-		invites  inviteRepository
+		mappings    mappingRepository
+		userRepo    userRepository
+		invites     inviteRepository
+		orgSettings orgSettingsRepository
 	)
 
 	dbURL := os.Getenv("DATABASE_URL")
@@ -49,9 +50,10 @@ func main() {
 			log.Fatalf("seed admin: %v", err)
 		}
 
-		mappings = &pgMappingRepository{db: db}
-		userRepo = &pgUserRepository{db: db}
-		invites  = &pgInviteRepository{db: db}
+		mappings    = &pgMappingRepository{db: db}
+		userRepo    = &pgUserRepository{db: db}
+		invites     = &pgInviteRepository{db: db}
+		orgSettings = &pgOrgSettingsRepository{db: db}
 		log.Println("using Postgres storage")
 	} else {
 		// Dev/test mode: in-memory stores backed by optional JSON file.
@@ -73,8 +75,9 @@ func main() {
 		if err != nil {
 			log.Fatalf("mapping store: %v", err)
 		}
-		mappings = &inMemoryMappingRepository{store: ms}
-		invites  = newMemInviteRepo()
+		mappings    = &inMemoryMappingRepository{store: ms}
+		invites     = newMemInviteRepo()
+		orgSettings = &memOrgSettingsRepository{}
 
 		ur, err := newEnvUserRepository(authUsername, authPassword)
 		if err != nil {
@@ -85,13 +88,14 @@ func main() {
 	}
 
 	srv := &server{
-		store:     newStore(),
-		mappings:  mappings,
-		sessions:  newSessionStore(24 * time.Hour),
-		uploadDir: uploadDir,
-		apiKey:    apiKey,
-		userRepo:  userRepo,
-		invites:   invites,
+		store:       newStore(),
+		mappings:    mappings,
+		sessions:    newSessionStore(24 * time.Hour),
+		uploadDir:   uploadDir,
+		apiKey:      apiKey,
+		userRepo:    userRepo,
+		invites:     invites,
+		orgSettings: orgSettings,
 	}
 
 	staticDir := os.Getenv("STATIC_DIR")
@@ -114,6 +118,7 @@ func main() {
 	mux.HandleFunc("POST /api/documents/{id}/analyze", srv.requireAuth(srv.analyze))
 	mux.HandleFunc("GET /api/documents/{id}", srv.requireAuth(srv.get))
 	mux.HandleFunc("GET /api/documents/{id}/bom.csv", srv.requireAuth(srv.exportCSV))
+	mux.HandleFunc("GET /api/documents/{id}/export/sap", srv.requireAuth(srv.exportSAP))
 	mux.HandleFunc("PUT /api/documents/{id}/bom", srv.requireAuth(srv.saveBOM))
 	mux.HandleFunc("GET /api/mappings/suggest", srv.requireAuth(srv.suggestMappings)) // must be before /api/mappings
 	mux.HandleFunc("GET /api/mappings", srv.requireAuth(srv.listMappings))
@@ -125,6 +130,8 @@ func main() {
 	mux.HandleFunc("POST /api/invites", srv.requireAuth(srv.createInvite))
 	mux.HandleFunc("GET /api/invites/{token}", srv.validateInvite)          // public
 	mux.HandleFunc("POST /api/invites/{token}/accept", srv.acceptInvite)    // public
+	mux.HandleFunc("GET /api/org/export-config", srv.requireAuth(srv.getExportConfig))
+	mux.HandleFunc("PUT /api/org/export-config", srv.requireAuth(srv.saveExportConfig))
 
 	if _, err := os.Stat(staticDir); err == nil {
 		mux.Handle("/", spaHandler(staticDir))

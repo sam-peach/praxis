@@ -332,3 +332,96 @@ func TestApplyMapping_DoesNotOverwriteExisting(t *testing.T) {
 func newMappingStoreInMemory() *mappingStore {
 	return &mappingStore{data: make(map[string]*Mapping), filePath: ""}
 }
+
+// ----------------------------------------------------------------------------
+// normaliseToMetres
+// ----------------------------------------------------------------------------
+
+func TestNormaliseToMetres_MM(t *testing.T) {
+	val := 660.0
+	unit := "MM"
+	q := Quantity{Raw: "660mm", Value: &val, Unit: &unit, Flags: []string{}}
+	normaliseToMetres(&q)
+
+	assert.Equal(t, "660mm", q.Raw, "Raw must not be modified")
+	require.NotNil(t, q.Value)
+	assert.InDelta(t, 0.66, *q.Value, 1e-9)
+	require.NotNil(t, q.Unit)
+	assert.Equal(t, "M", *q.Unit)
+	assert.Empty(t, q.Flags)
+}
+
+func TestNormaliseToMetres_CM(t *testing.T) {
+	val := 150.0
+	unit := "CM"
+	q := Quantity{Raw: "150cm", Value: &val, Unit: &unit, Flags: []string{}}
+	normaliseToMetres(&q)
+
+	assert.Equal(t, "150cm", q.Raw)
+	require.NotNil(t, q.Value)
+	assert.InDelta(t, 1.5, *q.Value, 1e-9)
+	require.NotNil(t, q.Unit)
+	assert.Equal(t, "M", *q.Unit)
+}
+
+func TestNormaliseToMetres_M_Unchanged(t *testing.T) {
+	val := 2.0
+	unit := "M"
+	q := Quantity{Raw: "2M", Value: &val, Unit: &unit, Flags: []string{}}
+	normaliseToMetres(&q)
+
+	require.NotNil(t, q.Value)
+	assert.Equal(t, 2.0, *q.Value, "M values must not be changed")
+	assert.Equal(t, "M", *q.Unit)
+}
+
+func TestNormaliseToMetres_EA_Unchanged(t *testing.T) {
+	val := 4.0
+	unit := "EA"
+	q := Quantity{Raw: "4", Value: &val, Unit: &unit, Flags: []string{}}
+	normaliseToMetres(&q)
+
+	require.NotNil(t, q.Value)
+	assert.Equal(t, 4.0, *q.Value, "non-length units must not be changed")
+	assert.Equal(t, "EA", *q.Unit)
+}
+
+func TestNormaliseToMetres_NilValue_Unchanged(t *testing.T) {
+	unit := "MM"
+	q := Quantity{Raw: "approx 5", Value: nil, Unit: &unit, Flags: []string{"unit_ambiguous"}}
+	normaliseToMetres(&q)
+
+	assert.Nil(t, q.Value, "nil Value must not be changed")
+	assert.Equal(t, "MM", *q.Unit, "unit must not be changed when value is nil")
+}
+
+// ----------------------------------------------------------------------------
+// applyMapping — MPN fallback
+// ----------------------------------------------------------------------------
+
+func TestApplyMapping_FallsBackToMPNWhenNoCPN(t *testing.T) {
+	ms := newMappingStoreInMemory()
+	// Mapping stored with the MPN as the key (CustomerPartNumber field).
+	_ = ms.save(&Mapping{
+		CustomerPartNumber: "43031-0007",
+		InternalPartNumber: "W-INTERNAL",
+	})
+
+	row := &BOMRow{
+		CustomerPartNumber:     "",
+		ManufacturerPartNumber: "43031-0007",
+	}
+	applyMapping(row, ms)
+
+	assert.Equal(t, "W-INTERNAL", row.InternalPartNumber)
+	assert.Contains(t, row.Flags, "mapping_applied")
+}
+
+func TestApplyMapping_SkipsWhenBothCPNAndMPNEmpty(t *testing.T) {
+	ms := newMappingStoreInMemory()
+	row := &BOMRow{CustomerPartNumber: "", ManufacturerPartNumber: ""}
+	applyMapping(row, ms)
+
+	assert.Empty(t, row.InternalPartNumber)
+	assert.NotContains(t, row.Flags, "mapping_applied")
+}

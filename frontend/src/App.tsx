@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
-import type { BOMRow, Document, DocumentStatus, Mapping } from './types/api'
+import type { BOMRow, Document, DocumentStatus, ExportConfig, Mapping } from './types/api'
 import {
-  analyzeDocument, checkAuth, exportCSVUrl, exportTSVUrl,
-  login, logout, saveBOM, saveMapping, uploadDocument,
+  analyzeDocument, checkAuth, exportCSVUrl, exportSAPUrl, exportTSVUrl,
+  getExportConfig, login, logout, saveBOM, saveMapping, uploadDocument,
 } from './api/client'
 import BomTable from './components/BomTable'
 import InvitePage from './components/InvitePage'
@@ -50,13 +50,19 @@ const ANALYSIS_CONCURRENCY = 3
 export default function App() {
   const navigate = useNavigate()
   const location = useLocation()
-  const [authed,   setAuthed]   = useState<boolean | null>(null)
-  const [entries,  setEntries]  = useState<Map<string, DocEntry>>(new Map())
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [copied,   setCopied]   = useState(false)
+  const [authed,       setAuthed]       = useState<boolean | null>(null)
+  const [entries,      setEntries]      = useState<Map<string, DocEntry>>(new Map())
+  const [activeId,     setActiveId]     = useState<string | null>(null)
+  const [copied,       setCopied]       = useState(false)
+  const [exportConfig, setExportConfig] = useState<ExportConfig>({ columns: ['internalPartNumber', 'quantity'], includeHeader: false })
   const sem = useRef(createSemaphore(ANALYSIS_CONCURRENCY))
 
-  useEffect(() => { checkAuth().then(ok => setAuthed(ok)) }, [])
+  useEffect(() => {
+    checkAuth().then(ok => {
+      setAuthed(ok)
+      if (ok) getExportConfig().then(setExportConfig).catch(() => {})
+    })
+  }, [])
 
   // Functional update helper — safe to call from any async context.
   function patchEntry(id: string, patch: Partial<DocEntry>) {
@@ -197,20 +203,35 @@ export default function App() {
     })
   }
 
+  function exportColumnValue(row: BOMRow, col: string): string {
+    switch (col) {
+      case 'lineNumber':             return String(row.lineNumber)
+      case 'description':            return row.description
+      case 'quantity':               return row.quantity.value != null ? String(row.quantity.value) : row.quantity.raw
+      case 'unit':                   return row.quantity.unit ?? ''
+      case 'customerPartNumber':     return row.customerPartNumber
+      case 'internalPartNumber':     return row.internalPartNumber
+      case 'manufacturerPartNumber': return row.manufacturerPartNumber
+      case 'notes':                  return row.notes
+      default:                       return ''
+    }
+  }
+
   function handleCopyForSAP(rows: BOMRow[]) {
-    const header = ['Line', 'Description', 'Quantity', 'Unit', 'Customer Part Number', 'Internal Part Number', 'Manufacturer Part Number', 'Notes']
-    const data = rows.map(r => [
-      String(r.lineNumber),
-      r.description,
-      r.quantity.value != null ? String(r.quantity.value) : r.quantity.raw,
-      r.quantity.unit ?? '',
-      r.customerPartNumber,
-      r.internalPartNumber,
-      r.manufacturerPartNumber,
-      r.notes,
-    ])
-    const tsv = [header, ...data].map(row => row.join('\t')).join('\n')
-    navigator.clipboard.writeText(tsv).then(() => {
+    const allLines: string[] = []
+    if (exportConfig.includeHeader) {
+      const headerLabels: Record<string, string> = {
+        lineNumber: 'Line', description: 'Description', quantity: 'Quantity',
+        unit: 'Unit', customerPartNumber: 'Customer Part Number',
+        internalPartNumber: 'Internal Part Number',
+        manufacturerPartNumber: 'Manufacturer Part Number', notes: 'Notes',
+      }
+      allLines.push(exportConfig.columns.map(c => headerLabels[c] ?? c).join('\t'))
+    }
+    rows
+      .filter(r => r.internalPartNumber.trim() !== '')
+      .forEach(r => allLines.push(exportConfig.columns.map(c => exportColumnValue(r, c)).join('\t')))
+    navigator.clipboard.writeText(allLines.join('\n')).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
@@ -325,6 +346,7 @@ export default function App() {
                         <button style={copied ? savedBtn : secondaryBtn} onClick={() => handleCopyForSAP(activeEntry.rows)}>
                           {copied ? 'Copied ✓' : 'Copy for SAP'}
                         </button>
+                        <a href={exportSAPUrl(activeEntry.doc.id)} style={secondaryBtn} download>Export SAP</a>
                         <a href={exportTSVUrl(activeEntry.doc.id)} style={secondaryBtn} download>Export TSV</a>
                         <a href={exportCSVUrl(activeEntry.doc.id)} style={secondaryBtn} download>Export CSV</a>
                       </>

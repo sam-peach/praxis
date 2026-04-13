@@ -84,6 +84,12 @@ type AnalysisResult struct {
 	Warnings []string
 }
 
+// ExportConfig controls which columns appear in the SAP export and their order.
+type ExportConfig struct {
+	Columns       []string `json:"columns"`
+	IncludeHeader bool     `json:"includeHeader"`
+}
+
 // InviteToken is a single-use link scoped to an organisation.
 type InviteToken struct {
 	ID             string     `json:"id"`

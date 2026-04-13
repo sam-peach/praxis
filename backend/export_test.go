@@ -176,3 +176,115 @@ func TestExportTSV_ContentDisposition(t *testing.T) {
 		t.Errorf("Content-Disposition should reference .tsv file, got %q", cd)
 	}
 }
+
+// TestExportSAP_TwoColumns verifies that the SAP export returns only
+// InternalPartNumber and Quantity (tab-separated, no header).
+func TestExportSAP_TwoColumns(t *testing.T) {
+	rows := []BOMRow{
+		{
+			LineNumber:         1,
+			Description:        "Red wire",
+			Quantity:           Quantity{Raw: "2", Value: fptr(2.0), Unit: sptr("M")},
+			InternalPartNumber: "W-R-2",
+		},
+		{
+			LineNumber:         2,
+			Description:        "Connector",
+			Quantity:           Quantity{Raw: "1", Value: fptr(1.0), Unit: sptr("EA")},
+			InternalPartNumber: "C-001",
+		},
+	}
+	srv, token := newExportServer(t, rows)
+	req := authedRequest(http.MethodGet, "/api/documents/doc-1/export/sap", "", token)
+	req.SetPathValue("id", "doc-1")
+	w := httptest.NewRecorder()
+
+	srv.exportSAP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), w.Body.String())
+	}
+	if lines[0] != "W-R-2\t2" {
+		t.Errorf("line 1: want %q, got %q", "W-R-2\t2", lines[0])
+	}
+	if lines[1] != "C-001\t1" {
+		t.Errorf("line 2: want %q, got %q", "C-001\t1", lines[1])
+	}
+}
+
+// TestExportSAP_SkipsRowsWithoutInternalPN verifies that rows without an
+// InternalPartNumber are omitted from the SAP export.
+func TestExportSAP_SkipsRowsWithoutInternalPN(t *testing.T) {
+	rows := []BOMRow{
+		{
+			LineNumber:         1,
+			Quantity:           Quantity{Raw: "3", Value: fptr(3.0), Unit: sptr("EA")},
+			InternalPartNumber: "I-001",
+		},
+		{
+			LineNumber:         2,
+			Quantity:           Quantity{Raw: "1", Value: fptr(1.0), Unit: sptr("EA")},
+			InternalPartNumber: "", // no internal PN — should be omitted
+		},
+	}
+	srv, token := newExportServer(t, rows)
+	req := authedRequest(http.MethodGet, "/api/documents/doc-1/export/sap", "", token)
+	req.SetPathValue("id", "doc-1")
+	w := httptest.NewRecorder()
+
+	srv.exportSAP(w, req)
+
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d: %q", len(lines), w.Body.String())
+	}
+	if lines[0] != "I-001\t3" {
+		t.Errorf("line 1: want %q, got %q", "I-001\t3", lines[0])
+	}
+}
+
+// TestExportSAP_ContentType verifies the Content-Type header.
+func TestExportSAP_ContentType(t *testing.T) {
+	srv, token := newExportServer(t, nil)
+	req := authedRequest(http.MethodGet, "/api/documents/doc-1/export/sap", "", token)
+	req.SetPathValue("id", "doc-1")
+	w := httptest.NewRecorder()
+
+	srv.exportSAP(w, req)
+
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/tab-separated-values") {
+		t.Errorf("Content-Type: want text/tab-separated-values, got %q", ct)
+	}
+}
+
+// TestExportSAP_DecimalQty verifies that fractional metres are formatted
+// correctly (e.g. 660 MM normalised to 0.66 M exports as "0.66").
+func TestExportSAP_DecimalQty(t *testing.T) {
+	rows := []BOMRow{
+		{
+			LineNumber:         1,
+			Quantity:           Quantity{Raw: "660mm", Value: fptr(0.66), Unit: sptr("M")},
+			InternalPartNumber: "CABLE-001",
+		},
+	}
+	srv, token := newExportServer(t, rows)
+	req := authedRequest(http.MethodGet, "/api/documents/doc-1/export/sap", "", token)
+	req.SetPathValue("id", "doc-1")
+	w := httptest.NewRecorder()
+
+	srv.exportSAP(w, req)
+
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	if lines[0] != "CABLE-001\t0.66" {
+		t.Errorf("want %q, got %q", "CABLE-001\t0.66", lines[0])
+	}
+}
