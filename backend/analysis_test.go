@@ -425,3 +425,41 @@ func TestApplyMapping_SkipsWhenBothCPNAndMPNEmpty(t *testing.T) {
 	assert.Empty(t, row.InternalPartNumber)
 	assert.NotContains(t, row.Flags, "mapping_applied")
 }
+
+// ----------------------------------------------------------------------------
+// parseBOMRows — truncation recovery
+// ----------------------------------------------------------------------------
+
+func TestParseBOMRows_TruncatedJSON_RecoverCompleteRows(t *testing.T) {
+	// Simulate a response that was cut off mid-way through the second object.
+	truncated := `[
+  {"rawLabel":"Item 1","description":"Red wire","rawQuantity":"2","unit":"M","customerPartNumber":"","manufacturerPartNumber":"MPN-1","supplierReference":"","notes":"","confidence":0.9,"flags":[]},
+  {"rawLabel":"Item 2","description":"Connector","rawQuantity":"1","unit":"EA","customerPartNumber":"","manufacturerPartNumber":"MPN-2","supplierReference":"","notes":"","confide`
+
+	rows, warnings, err := parseBOMRows(truncated, nil)
+
+	require.NoError(t, err, "truncated response should not return an error")
+	require.Len(t, rows, 1, "should recover the one complete row")
+	assert.Equal(t, "Red wire", rows[0].Description)
+	assert.True(t, len(warnings) > 0, "should warn about truncation")
+	assert.Contains(t, warnings[0], "truncated")
+}
+
+func TestParseBOMRows_TruncatedJSON_NoCompleteRows(t *testing.T) {
+	// Response cut off before any complete object.
+	truncated := `[{"rawLabel":"Item 1","description":"Cut off mid`
+
+	_, _, err := parseBOMRows(truncated, nil)
+
+	assert.Error(t, err, "no recoverable rows should still error")
+}
+
+func TestParseBOMRows_ValidJSON_UnaffectedByRecoveryLogic(t *testing.T) {
+	valid := `[{"rawLabel":"W1","description":"Black wire","rawQuantity":"3","unit":"M","customerPartNumber":"","manufacturerPartNumber":"MPN-3","supplierReference":"","notes":"","confidence":0.95,"flags":[]}]`
+
+	rows, warnings, err := parseBOMRows(valid, nil)
+
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Empty(t, warnings)
+}

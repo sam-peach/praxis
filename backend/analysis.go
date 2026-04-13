@@ -113,7 +113,7 @@ RULES
 		} `json:"messages"`
 	}{
 		Model:     anthropicModel,
-		MaxTokens: 8192,
+		MaxTokens: 16000,
 		System:    system,
 		Messages: []struct {
 			Role    string `json:"role"`
@@ -204,13 +204,23 @@ func parseBOMRows(text string, ms mappingReader) ([]BOMRow, []string, error) {
 		}
 		text = text[start:]
 	}
-	if end := strings.LastIndex(text, "]"); end != -1 {
-		text = text[:end+1]
-	}
-
 	var raw []llmRow
-	if err := json.Unmarshal([]byte(text), &raw); err != nil {
-		return nil, nil, fmt.Errorf("JSON unmarshal: %w — response: %.300s", err, text)
+	warnings := []string{}
+	// Use a decoder so that any trailing text after the ] (e.g. LLM commentary)
+	// is ignored without needing to pre-strip it. This also preserves the full
+	// text for truncation recovery — stripping on LastIndex("]") breaks recovery
+	// because the last ] may be inside a "flags":[] value, not the array close.
+	if err := json.NewDecoder(strings.NewReader(text)).Decode(&raw); err != nil {
+		// The LLM response may have been cut off at the token limit.
+		// Attempt to recover whatever complete objects were received.
+		recovered, ok := recoverTruncatedArray(text)
+		if !ok {
+			return nil, nil, fmt.Errorf("JSON unmarshal: %w — response: %.300s", err, text)
+		}
+		if err2 := json.Unmarshal([]byte(recovered), &raw); err2 != nil {
+			return nil, nil, fmt.Errorf("JSON unmarshal: %w — response: %.300s", err, text)
+		}
+		warnings = append(warnings, "The drawing response was truncated — the BOM may be incomplete. Try re-analysing, or split the drawing into smaller sections.")
 	}
 
 	rows := make([]BOMRow, 0, len(raw))
@@ -252,11 +262,26 @@ func parseBOMRows(text string, ms mappingReader) ([]BOMRow, []string, error) {
 		rows = append(rows, row)
 	}
 
-	warnings := []string{}
 	if len(rows) == 0 {
 		warnings = append(warnings, "No BOM items were identified in this drawing.")
 	}
 	return rows, warnings, nil
+}
+
+// recoverTruncatedArray attempts to salvage a JSON array that was cut off
+// before the closing ]. It finds the last complete object (ending with })
+// and closes the array. Returns the repaired text and true on success.
+func recoverTruncatedArray(text string) (string, bool) {
+	idx := strings.LastIndex(text, "}")
+	if idx < 0 {
+		return "", false
+	}
+	candidate := strings.TrimSpace(text[:idx+1]) + "]"
+	// Verify it at least opens with [.
+	if !strings.HasPrefix(strings.TrimSpace(candidate), "[") {
+		return "", false
+	}
+	return candidate, true
 }
 
 // quantityRE matches: optional number (int or decimal) followed by optional unit letters.
