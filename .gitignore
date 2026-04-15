@@ -5,6 +5,7 @@
 backend/uploads/
 backend/tmp/
 backend/sme-prototype
+backend/bomsmith
 backend/data/
 backend/.tmp
 
@@ -17,6 +18,7 @@ infra/.terraform/
 infra/.terraform.lock.hcl
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
+infra/terraform.tfstate.*.backup
 infra/terraform.tfvars
 
 # Claude Code local config (machine-specific overrides only — settings.json is committed)
