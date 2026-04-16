@@ -19,9 +19,10 @@ func newSettingsServer(t *testing.T) (*server, string) {
 	ss := newSessionStore(time.Hour)
 	token := ss.create("user-1", "org-1")
 	srv := &server{
-		store:    newStore(),
-		sessions: ss,
-		mappings: &inMemoryMappingRepository{store: &mappingStore{data: make(map[string]*Mapping), filePath: ""}},
+		store:         newStore(),
+		sessions:      ss,
+		mappings:      &inMemoryMappingRepository{store: &mappingStore{data: make(map[string]*Mapping), filePath: ""}},
+		matchFeedback: newMemMatchFeedbackRepository(),
 		userRepo: &memUserRepository{
 			users: map[string]*User{
 				"admin": {

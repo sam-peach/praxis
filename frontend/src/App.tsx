@@ -11,6 +11,7 @@ import InvitePage from './components/InvitePage'
 import { LogoWordmark } from './components/Logo'
 import LoginPage from './components/LoginPage'
 import SettingsPage from './components/SettingsPage'
+import SimilarDrawings from './components/SimilarDrawings'
 import UploadArea from './components/UploadArea'
 import WarningsPanel from './components/WarningsPanel'
 import { colors, font, radius, shadow } from './theme'
@@ -18,11 +19,12 @@ import { colors, font, radius, shadow } from './theme'
 // ── Per-document state ───────────────────────────────────────────────────────
 
 interface DocEntry {
-  doc:       Document
-  rows:      BOMRow[]
-  uploading: boolean   // file being transferred to server
-  saved:     boolean
-  error:     string | null
+  doc:                Document
+  rows:               BOMRow[]
+  uploading:          boolean   // file being transferred to server
+  saved:              boolean
+  error:              string | null
+  analysisStartedAt:  number | null  // Date.now() when analysis began, null otherwise
 }
 
 // ── Concurrency semaphore ────────────────────────────────────────────────────
@@ -99,17 +101,19 @@ export default function App() {
       const tempId = `uploading-${Date.now()}-${Math.random()}`
       const placeholder: DocEntry = {
         doc: {
-          id:         tempId,
-          filename:   file.name,
-          status:     'uploaded',
-          uploadedAt: new Date().toISOString(),
-          bomRows:    [],
-          warnings:   [],
+          id:            tempId,
+          filename:      file.name,
+          status:        'uploaded',
+          uploadedAt:    new Date().toISOString(),
+          bomRows:       [],
+          warnings:      [],
+          fileSizeBytes: 0,
         },
-        rows:      [],
-        uploading: true,
-        saved:     false,
-        error:     null,
+        rows:               [],
+        uploading:          true,
+        saved:              false,
+        error:              null,
+        analysisStartedAt:  null,
       }
       return { tempId, file, placeholder }
     })
@@ -132,7 +136,7 @@ export default function App() {
         setEntries(prev => {
           const next = new Map(prev)
           next.delete(tempId)
-          next.set(doc.id, { doc, rows: [], uploading: false, saved: false, error: null })
+          next.set(doc.id, { doc, rows: [], uploading: false, saved: false, error: null, analysisStartedAt: null })
           return next
         })
         // Keep the active selection pointing at the real doc.
@@ -154,18 +158,19 @@ export default function App() {
       const e = prev.get(id)
       if (!e) return prev
       const next = new Map(prev)
-      next.set(id, { ...e, doc: { ...e.doc, status: 'analyzing' } })
+      next.set(id, { ...e, doc: { ...e.doc, status: 'analyzing' }, analysisStartedAt: Date.now() })
       return next
     })
 
     await sem.current.acquire()
     try {
       const result = await analyzeDocument(id)
-      patchEntry(id, { doc: result, rows: result.bomRows, saved: false })
+      patchEntry(id, { doc: result, rows: result.bomRows, saved: false, analysisStartedAt: null })
     } catch (e) {
       patchEntry(id, {
         doc: { ...(entries.get(id)?.doc ?? {} as Document), status: 'error' },
         error: (e as Error).message,
+        analysisStartedAt: null,
       })
     } finally {
       sem.current.release()
@@ -173,6 +178,21 @@ export default function App() {
   }
 
   // ── Per-doc actions ───────────────────────────────────────────────────────
+
+  function handleClonedBOM(id: string, result: { bomRows: BOMRow[]; warnings: string[] }) {
+    setEntries(prev => {
+      const e = prev.get(id)
+      if (!e) return prev
+      const next = new Map(prev)
+      next.set(id, {
+        ...e,
+        rows: result.bomRows,
+        doc: { ...e.doc, bomRows: result.bomRows, warnings: result.warnings },
+        saved: false,
+      })
+      return next
+    })
+  }
 
   async function handleSave(id: string, rows: BOMRow[]) {
     try {
@@ -339,6 +359,14 @@ export default function App() {
                       {activeEntry.doc.filename}
                     </span>
                     <StatusBadge status={activeEntry.doc.status} uploading={activeEntry.uploading} />
+                    {activeEntry.doc.status === 'analyzing' && activeEntry.analysisStartedAt !== null && (
+                      <ElapsedTimer startedAt={activeEntry.analysisStartedAt} />
+                    )}
+                    {activeEntry.doc.status === 'done' && activeEntry.doc.analysisDurationMs != null && activeEntry.doc.analysisDurationMs > 0 && (
+                      <span style={{ fontSize: 12, color: colors.textMuted }} title="Analysis took">
+                        {formatElapsed(activeEntry.doc.analysisDurationMs)}
+                      </span>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', flexShrink: 0 }}>
                     {activeEntry.doc.status === 'error' && (
@@ -367,6 +395,13 @@ export default function App() {
 
                 <WarningsPanel warnings={activeEntry.doc.warnings ?? []} />
 
+                {activeEntry.doc.status === 'done' && (
+                  <SimilarDrawings
+                    docId={activeEntry.doc.id}
+                    onClone={result => handleClonedBOM(activeEntry.doc.id, result)}
+                  />
+                )}
+
                 {hasResults ? (
                   <BomTable
                     rows={activeEntry.rows}
@@ -378,7 +413,14 @@ export default function App() {
                 ) : activeEntry.doc.status === 'uploaded' ? (
                   <EmptyState>Ready to analyze.</EmptyState>
                 ) : activeEntry.doc.status === 'analyzing' ? (
-                  <EmptyState>Analyzing drawing…</EmptyState>
+                  <EmptyState>
+                    Analyzing drawing…
+                    {activeEntry.analysisStartedAt !== null && (
+                      <div style={{ marginTop: 8 }}>
+                        <ElapsedTimer startedAt={activeEntry.analysisStartedAt} />
+                      </div>
+                    )}
+                  </EmptyState>
                 ) : activeEntry.doc.status === 'error' ? (
                   <EmptyState>Analysis failed. See error above.</EmptyState>
                 ) : null}
@@ -393,6 +435,23 @@ export default function App() {
   )
 }
 
+// ── ElapsedTimer ─────────────────────────────────────────────────────────────
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  return `${Math.floor(s / 60)}m ${s % 60}s`
+}
+
+function ElapsedTimer({ startedAt }: { startedAt: number }) {
+  const [elapsed, setElapsed] = useState(Date.now() - startedAt)
+  useEffect(() => {
+    const id = setInterval(() => setElapsed(Date.now() - startedAt), 1000)
+    return () => clearInterval(id)
+  }, [startedAt])
+  return <span style={{ fontSize: 11, color: colors.textMuted }}>{formatElapsed(elapsed)}</span>
+}
+
 // ── DocCard ───────────────────────────────────────────────────────────────────
 
 function DocCard({
@@ -404,7 +463,7 @@ function DocCard({
   onRemove: () => void
   onRetry:  () => void
 }) {
-  const { doc, rows, uploading, error } = entry
+  const { doc, rows, uploading, error, analysisStartedAt } = entry
   const busy = uploading || doc.status === 'analyzing'
 
   return (
@@ -443,6 +502,14 @@ function DocCard({
         {doc.status === 'done' && (
           <span style={{ fontSize: 11, color: colors.textMuted }}>
             {rows.length} {rows.length === 1 ? 'item' : 'items'}
+          </span>
+        )}
+        {doc.status === 'analyzing' && analysisStartedAt !== null && (
+          <ElapsedTimer startedAt={analysisStartedAt} />
+        )}
+        {doc.status === 'done' && doc.analysisDurationMs != null && doc.analysisDurationMs > 0 && (
+          <span style={{ fontSize: 11, color: colors.textSubtle }} title="Analysis time">
+            {formatElapsed(doc.analysisDurationMs)}
           </span>
         )}
         {busy && <span className="spinner" style={{ borderTopColor: colors.brand, borderColor: colors.borderLight, width: 10, height: 10 }} />}

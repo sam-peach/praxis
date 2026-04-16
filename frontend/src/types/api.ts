@@ -31,6 +31,39 @@ export interface Document {
   uploadedAt: string
   bomRows: BOMRow[]
   warnings: string[]
+  clonedFromId?: string
+  fileSizeBytes: number
+  analysisDurationMs?: number
+}
+
+export interface ScoreBreakdown {
+  filename: number
+  cpn: number
+  mpn: number
+}
+
+export interface SimilarDocument {
+  id: string
+  filename: string
+  uploadedAt: string
+  score: number
+  scoreBreakdown: ScoreBreakdown
+  matchReasons: string[]
+  bomRowCount: number
+}
+
+export interface MatchFeedback {
+  drawingId: string
+  candidateId: string
+  action: 'accept' | 'reject'
+  score: number
+  scoreBreakdown?: ScoreBreakdown
+}
+
+export interface BOMPreview {
+  filename: string
+  rows: BOMRow[]
+  totalRows: number
 }
 
 export interface ExportConfig {

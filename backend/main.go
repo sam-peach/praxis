@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,79 +24,52 @@ func main() {
 		log.Fatalf("failed to create upload directory: %v", err)
 	}
 
-	var (
-		mappings    mappingRepository
-		userRepo    userRepository
-		invites     inviteRepository
-		orgSettings orgSettingsRepository
-		errorLog    errorLogRepository
-		sessions    sessionRepository
-	)
-
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL != "" {
-		db, err := openDB(dbURL)
-		if err != nil {
-			log.Fatalf("database: %v", err)
+	matchThreshold := defaultMatchThreshold
+	if v := os.Getenv("MATCH_SCORE_THRESHOLD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			matchThreshold = f
+			log.Printf("match threshold set to %.3f from MATCH_SCORE_THRESHOLD", matchThreshold)
+		} else {
+			log.Printf("invalid MATCH_SCORE_THRESHOLD %q, using default %.3f", v, matchThreshold)
 		}
-		if err := runMigrations(db); err != nil {
-			log.Fatalf("migrations: %v", err)
-		}
-
-		orgName := os.Getenv("ORG_NAME")
-		adminUsername := os.Getenv("AUTH_USERNAME")
-		adminPassword := os.Getenv("AUTH_PASSWORD")
-		if adminUsername == "" || adminPassword == "" {
-			log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
-		}
-		if err := seedAdmin(db, orgName, adminUsername, adminPassword); err != nil {
-			log.Fatalf("seed admin: %v", err)
-		}
-
-		mappings    = &pgMappingRepository{db: db}
-		userRepo    = &pgUserRepository{db: db}
-		invites     = &pgInviteRepository{db: db}
-		orgSettings = &pgOrgSettingsRepository{db: db}
-		errorLog    = &pgErrorLogRepository{db: db}
-		sessions    = &pgSessionStore{db: db, ttl: 24 * time.Hour}
-		log.Println("using Postgres storage")
-	} else {
-		// Dev/test mode: in-memory stores backed by optional JSON file.
-		authUsername := os.Getenv("AUTH_USERNAME")
-		authPassword := os.Getenv("AUTH_PASSWORD")
-		if authUsername == "" || authPassword == "" {
-			log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
-		}
-
-		dataDir := os.Getenv("DATA_DIR")
-		if dataDir == "" {
-			dataDir = "./data"
-		}
-		if err := os.MkdirAll(dataDir, 0755); err != nil {
-			log.Fatalf("failed to create data directory: %v", err)
-		}
-
-		ms, err := newMappingStore(filepath.Join(dataDir, "mappings.json"))
-		if err != nil {
-			log.Fatalf("mapping store: %v", err)
-		}
-		mappings    = &inMemoryMappingRepository{store: ms}
-		invites     = newMemInviteRepo()
-		orgSettings = &memOrgSettingsRepository{}
-		errorLog    = &memErrorLogRepository{}
-		sessions    = newSessionStore(24 * time.Hour)
-
-		ur, err := newEnvUserRepository(authUsername, authPassword)
-		if err != nil {
-			log.Fatalf("user repository: %v", err)
-		}
-		userRepo = ur
-		log.Println("DATABASE_URL not set — using in-memory storage")
 	}
 
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Fatal("DATABASE_URL must be set")
+	}
+	db, err := openDB(dbURL)
+	if err != nil {
+		log.Fatalf("database: %v", err)
+	}
+	if err := runMigrations(db); err != nil {
+		log.Fatalf("migrations: %v", err)
+	}
+
+	orgName := os.Getenv("ORG_NAME")
+	adminUsername := os.Getenv("AUTH_USERNAME")
+	adminPassword := os.Getenv("AUTH_PASSWORD")
+	if adminUsername == "" || adminPassword == "" {
+		log.Fatal("AUTH_USERNAME and AUTH_PASSWORD must be set")
+	}
+	if err := seedAdmin(db, orgName, adminUsername, adminPassword); err != nil {
+		log.Fatalf("seed admin: %v", err)
+	}
+
+	store         := &pgDocumentStore{db: db}
+	matchFeedback := &pgMatchFeedbackRepository{db: db}
+	mappings      := &pgMappingRepository{db: db}
+	userRepo      := &pgUserRepository{db: db}
+	invites       := &pgInviteRepository{db: db}
+	orgSettings   := &pgOrgSettingsRepository{db: db}
+	errorLog      := &pgErrorLogRepository{db: db}
+	sessions      := &pgSessionStore{db: db, ttl: 24 * time.Hour}
+
 	srv := &server{
-		store:         newStore(),
-		mappings:      mappings,
+		store:          store,
+		mappings:       mappings,
+		matchFeedback:  matchFeedback,
+		matchThreshold: matchThreshold,
 		sessions:      sessions,
 		uploadDir:     uploadDir,
 		apiKey:        apiKey,
@@ -128,6 +102,10 @@ func main() {
 	mux.HandleFunc("GET /api/documents/{id}/bom.csv", srv.requireAuth(srv.exportCSV))
 	mux.HandleFunc("GET /api/documents/{id}/export/sap", srv.requireAuth(srv.exportSAP))
 	mux.HandleFunc("PUT /api/documents/{id}/bom", srv.requireAuth(srv.saveBOM))
+	mux.HandleFunc("GET /api/documents/{id}/similar", srv.requireAuth(srv.similarDocs))
+	mux.HandleFunc("GET /api/documents/{id}/preview", srv.requireAuth(srv.previewBOM))
+	mux.HandleFunc("POST /api/documents/{id}/bom/clone-from/{sourceId}", srv.requireAuth(srv.cloneBOM))
+	mux.HandleFunc("POST /api/match-feedback", srv.requireAuth(srv.recordFeedback))
 	mux.HandleFunc("GET /api/mappings/suggest", srv.requireAuth(srv.suggestMappings)) // must be before /api/mappings
 	mux.HandleFunc("GET /api/mappings", srv.requireAuth(srv.listMappings))
 	mux.HandleFunc("POST /api/mappings/upload", srv.requireAuth(srv.uploadMappings)) // must be before /api/mappings

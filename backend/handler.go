@@ -17,16 +17,18 @@ import (
 )
 
 type server struct {
-	store         *documentStore
-	mappings      mappingRepository
-	sessions      sessionRepository
-	uploadDir     string
-	apiKey        string
-	userRepo      userRepository
-	invites       inviteRepository
-	orgSettings   orgSettingsRepository
-	errorLog      errorLogRepository
-	adminUsername string
+	store          documentRepository
+	mappings       mappingRepository
+	sessions       sessionRepository
+	uploadDir      string
+	apiKey         string
+	userRepo       userRepository
+	invites        inviteRepository
+	orgSettings    orgSettingsRepository
+	errorLog       errorLogRepository
+	matchFeedback  matchFeedbackRepository
+	matchThreshold float64
+	adminUsername  string
 }
 
 // POST /api/documents/upload
@@ -73,19 +75,23 @@ func (s *server) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dest.Close()
 
-	if _, err := io.Copy(dest, file); err != nil {
+	written, err := io.Copy(dest, file)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to write file")
 		return
 	}
 
+	sd := sessionFromContext(r)
 	doc := &Document{
-		ID:         id,
-		Filename:   header.Filename,
-		FilePath:   destPath,
-		Status:     StatusUploaded,
-		UploadedAt: time.Now().UTC(),
-		BOMRows:    []BOMRow{},
-		Warnings:   []string{},
+		ID:             id,
+		OrganizationID: sd.OrgID,
+		Filename:       header.Filename,
+		FilePath:       destPath,
+		Status:         StatusUploaded,
+		UploadedAt:     time.Now().UTC(),
+		BOMRows:        []BOMRow{},
+		Warnings:       []string{},
+		FileSizeBytes:  written,
 	}
 	s.store.save(doc)
 	writeJSON(w, http.StatusCreated, doc)
@@ -100,12 +106,20 @@ func (s *server) analyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// FilePath is not persisted in Postgres; reconstruct it from the upload
+	// directory and document ID so extraction works after a store round-trip.
+	if doc.FilePath == "" {
+		doc.FilePath = filepath.Join(s.uploadDir, doc.ID+".pdf")
+	}
+
 	log.Printf("analyze: starting %s (%s)", doc.ID, doc.Filename)
 	doc.Status = StatusAnalyzing
 	s.store.save(doc)
 
 	sd := sessionFromContext(r)
+	analysisStart := time.Now()
 	result, err := analyzeDocument(doc, s.apiKey, &orgScopedMappings{repo: s.mappings, orgID: sd.OrgID})
+	analysisDuration := time.Since(analysisStart)
 	if err != nil {
 		log.Printf("analyze: error for %s: %v", doc.ID, err)
 		doc.Status = StatusError
@@ -119,10 +133,11 @@ func (s *server) analyze(w http.ResponseWriter, r *http.Request) {
 		s.logError("warn", "analysis", warning, doc.Filename)
 	}
 
-	log.Printf("analyze: done %s — %d rows, %d warnings", doc.ID, len(result.BOMRows), len(result.Warnings))
+	log.Printf("analyze: done %s — %d rows, %d warnings, took %dms", doc.ID, len(result.BOMRows), len(result.Warnings), analysisDuration.Milliseconds())
 	doc.BOMRows = result.BOMRows
 	doc.Warnings = result.Warnings
 	doc.Status = StatusDone
+	doc.AnalysisDurationMs = analysisDuration.Milliseconds()
 	s.store.save(doc)
 	writeJSON(w, http.StatusOK, doc)
 }
@@ -624,6 +639,168 @@ func (s *server) logError(level, component, message, docName string) {
 		Message:   message,
 		DocName:   docName,
 	})
+}
+
+// GET /api/documents/{id}/similar — returns ranked past documents from the same
+// org that are similar to doc {id}. Only candidates scoring at or above the
+// server's matchThreshold are returned. Logs a structured match_attempt entry.
+func (s *server) similarDocs(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	doc, err := s.store.get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "document not found")
+		return
+	}
+	if doc.Status != StatusDone {
+		writeJSON(w, http.StatusOK, []SimilarDocument{})
+		return
+	}
+
+	sd := sessionFromContext(r)
+	candidates, err := s.store.listByOrg(sd.OrgID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load documents")
+		return
+	}
+
+	// Score with threshold=0 first to capture all candidates for the log.
+	all := rankSimilarDocuments(doc, candidates, 0)
+	results := rankSimilarDocuments(doc, candidates, s.matchThreshold)
+
+	logMatchAttempt(id, len(candidates), s.matchThreshold, all, results)
+
+	if results == nil {
+		results = []SimilarDocument{}
+	}
+	writeJSON(w, http.StatusOK, results)
+}
+
+// logMatchAttempt emits a structured JSON log line for observability.
+// Fields: drawing_id, total_candidates, threshold, shown_count, candidates.
+func logMatchAttempt(drawingID string, totalCandidates int, threshold float64, all, shown []SimilarDocument) {
+	type candidateLog struct {
+		ID    string         `json:"id"`
+		Score float64        `json:"score"`
+		BD    ScoreBreakdown `json:"score_breakdown"`
+		Shown bool           `json:"shown"`
+	}
+	shownIDs := make(map[string]bool, len(shown))
+	for _, s := range shown {
+		shownIDs[s.ID] = true
+	}
+	cls := make([]candidateLog, len(all))
+	for i, c := range all {
+		cls[i] = candidateLog{ID: c.ID, Score: c.Score, BD: c.ScoreBreakdown, Shown: shownIDs[c.ID]}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"drawing_id":       drawingID,
+		"total_candidates": totalCandidates,
+		"threshold":        threshold,
+		"shown_count":      len(shown),
+		"candidates":       cls,
+	})
+	log.Printf("match_attempt: %s", b)
+}
+
+// POST /api/documents/{id}/bom/clone-from/{sourceId} — copies the BOM rows
+// from sourceId into doc {id} as a starting point, recording the relationship.
+// The user can then edit the cloned BOM and save normally.
+func (s *server) cloneBOM(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sourceID := r.PathValue("sourceId")
+
+	doc, err := s.store.get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "document not found")
+		return
+	}
+	source, err := s.store.get(sourceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "source document not found")
+		return
+	}
+
+	// Org isolation: source must belong to the caller's organisation.
+	sd := sessionFromContext(r)
+	if source.OrganizationID != "" && source.OrganizationID != sd.OrgID {
+		writeError(w, http.StatusForbidden, "source document not accessible")
+		return
+	}
+
+	// Clone rows, assigning fresh IDs so they don't collide.
+	cloned := make([]BOMRow, len(source.BOMRows))
+	for i, row := range source.BOMRows {
+		row.ID = fmt.Sprintf("row-%d", i+1)
+		cloned[i] = row
+	}
+
+	doc.BOMRows = cloned
+	doc.ClonedFromID = sourceID
+	doc.Warnings = append(doc.Warnings,
+		fmt.Sprintf("BOM cloned from %q — review all rows before saving.", source.Filename))
+	s.store.save(doc)
+
+	log.Printf("clone: %s cloned BOM from %s", id, sourceID)
+	writeJSON(w, http.StatusOK, doc)
+}
+
+// GET /api/documents/{id}/preview — returns up to 10 BOM rows from a past
+// document so the user can inspect before committing to reuse.
+func (s *server) previewBOM(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	doc, err := s.store.get(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "document not found")
+		return
+	}
+
+	const previewLimit = 10
+	rows := doc.BOMRows
+	if len(rows) > previewLimit {
+		rows = rows[:previewLimit]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"filename":  doc.Filename,
+		"rows":      rows,
+		"totalRows": len(doc.BOMRows),
+	})
+}
+
+// POST /api/match-feedback — records accept or reject decisions for similarity
+// candidates. Accepts a JSON array so the frontend can submit a bulk reject
+// ("none of these") in a single call.
+//
+// Each item: { drawingId, candidateId, action ("accept"|"reject"), score,
+//              scoreBreakdown? }
+func (s *server) recordFeedback(w http.ResponseWriter, r *http.Request) {
+	var items []MatchFeedback
+	if err := json.NewDecoder(r.Body).Decode(&items); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	for _, item := range items {
+		if item.Action != "accept" && item.Action != "reject" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid action %q: must be accept or reject", item.Action))
+			return
+		}
+	}
+
+	if len(items) == 0 {
+		writeJSON(w, http.StatusOK, map[string]int{"recorded": 0})
+		return
+	}
+
+	sd := sessionFromContext(r)
+	recorded := 0
+	for i := range items {
+		if err := s.matchFeedback.record(&items[i], sd.OrgID); err != nil {
+			log.Printf("match_feedback record error: %v", err)
+			continue
+		}
+		recorded++
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"recorded": recorded})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

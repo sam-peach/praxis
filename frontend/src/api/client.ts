@@ -1,4 +1,4 @@
-import type { BOMRow, Document, ErrorLogEntry, ExportConfig, Mapping } from '../types/api'
+import type { BOMPreview, BOMRow, Document, ErrorLogEntry, ExportConfig, MatchFeedback, Mapping, SimilarDocument } from '../types/api'
 
 const BASE = '/api'
 
@@ -27,6 +27,33 @@ export async function analyzeDocument(id: string): Promise<Document> {
 
 export async function getDocument(id: string): Promise<Document> {
   const res = await fetch(`${BASE}/documents/${id}`)
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
+export async function getSimilarDocuments(id: string): Promise<SimilarDocument[]> {
+  const res = await fetch(`${BASE}/documents/${id}/similar`)
+  if (!res.ok) return []
+  return res.json()
+}
+
+export async function getBOMPreview(id: string): Promise<BOMPreview> {
+  const res = await fetch(`${BASE}/documents/${id}/preview`)
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json()
+}
+
+export async function recordMatchFeedback(items: MatchFeedback[]): Promise<void> {
+  if (items.length === 0) return
+  await fetch(`${BASE}/match-feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(items),
+  })
+}
+
+export async function cloneFromDocument(id: string, sourceId: string): Promise<Document> {
+  const res = await fetch(`${BASE}/documents/${id}/bom/clone-from/${sourceId}`, { method: 'POST' })
   if (!res.ok) throw new Error(await parseError(res))
   return res.json()
 }

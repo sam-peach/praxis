@@ -12,13 +12,48 @@ const (
 )
 
 type Document struct {
-	ID         string         `json:"id"`
-	Filename   string         `json:"filename"`
-	FilePath   string         `json:"-"` // server-side only
-	Status     DocumentStatus `json:"status"`
-	UploadedAt time.Time      `json:"uploadedAt"`
-	BOMRows    []BOMRow       `json:"bomRows"`
-	Warnings   []string       `json:"warnings"`
+	ID                 string         `json:"id"`
+	OrganizationID     string         `json:"-"` // server-side only
+	Filename           string         `json:"filename"`
+	FilePath           string         `json:"-"` // server-side only
+	Status             DocumentStatus `json:"status"`
+	UploadedAt         time.Time      `json:"uploadedAt"`
+	BOMRows            []BOMRow       `json:"bomRows"`
+	Warnings           []string       `json:"warnings"`
+	ClonedFromID       string         `json:"clonedFromId,omitempty"`
+	FileSizeBytes      int64          `json:"fileSizeBytes"`
+	AnalysisDurationMs int64          `json:"analysisDurationMs,omitempty"`
+}
+
+// ScoreBreakdown holds per-signal contributions to the composite similarity score.
+type ScoreBreakdown struct {
+	Filename float64 `json:"filename"` // Jaccard similarity of filename tokens
+	CPN      float64 `json:"cpn"`      // Jaccard similarity of customer part numbers
+	MPN      float64 `json:"mpn"`      // Jaccard similarity of manufacturer part numbers
+}
+
+// SimilarDocument is a lightweight summary of a past document that resembles
+// the current drawing. Returned by GET /api/documents/{id}/similar.
+type SimilarDocument struct {
+	ID             string         `json:"id"`
+	Filename       string         `json:"filename"`
+	UploadedAt     time.Time      `json:"uploadedAt"`
+	Score          float64        `json:"score"`          // 0.0–1.0 composite similarity
+	ScoreBreakdown ScoreBreakdown `json:"scoreBreakdown"` // per-signal contributions
+	MatchReasons   []string       `json:"matchReasons"`   // human-readable explanations
+	BOMRowCount    int            `json:"bomRowCount"`
+}
+
+// MatchFeedback records a user's explicit accept or reject of a similarity candidate.
+type MatchFeedback struct {
+	ID             string          `json:"id"`
+	OrganizationID string          `json:"-"` // server-side only
+	DrawingID      string          `json:"drawingId"`
+	CandidateID    string          `json:"candidateId"`
+	Action         string          `json:"action"`                   // "accept" | "reject"
+	Score          float64         `json:"score"`
+	ScoreBreakdown *ScoreBreakdown `json:"scoreBreakdown,omitempty"` // nil when not captured
+	CreatedAt      time.Time       `json:"createdAt"`
 }
 
 // Quantity holds a quantity value as extracted from the drawing.
